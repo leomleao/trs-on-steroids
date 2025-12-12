@@ -2,6 +2,9 @@ name: Release Edge Extension
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - "chrome-extension/manifest.json"
 
 jobs:
   release:
