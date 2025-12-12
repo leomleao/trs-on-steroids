@@ -1,14 +1,24 @@
-  - name: Release Edge Extension
-  # You may pin to the exact commit or the version.
-  # uses: baptistecdr/release-edge-extension@be5d8392a77ea9c91fc1dc351301fd7ce27807e8
-  uses: baptistecdr/release-edge-extension@v1.0.0
-  with:
-    # The API key for the Edge Web Store API
-    api-key: ${{ secrets.EDGE_API_KEY }}
-    # The Client ID for the Edge Web Store API associated to the API key
-    client-id: ${{ secrets.EDGE_CLIENT_ID }}
-    # The Product ID of the Edge extension
-    product-id: "2e21bb95-3850-495a-9fd1-c2c7811c1dae"
-    # The path to the Edge extension zip file
-    product-path: "./chrome-extension/extension.zip"
-          
+name: Release Edge Extension
+
+on:
+  workflow_dispatch:
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Zip chrome-extension folder
+        run: |
+          zip -r extension.zip chrome-extension
+
+      - name: Release to Edge Add-ons Store
+        uses: baptistecdr/release-edge-extension@v1.0.0
+        with:
+          api-key: ${{ secrets.EDGE_API_KEY }}
+          client-id: ${{ secrets.EDGE_CLIENT_ID }}
+          product-id: "2e21bb95-3850-495a-9fd1-c2c7811c1dae"
+          product-path: "./extension.zip"
