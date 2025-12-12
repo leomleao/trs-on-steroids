@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "TRS on Steroids",
+  "version": "0.1",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://portal.theconfigteam.co.uk/*"
+      ]
+    }
+  ]
+}
