@@ -1,0 +1,14 @@
+  - name: Release Edge Extension
+  # You may pin to the exact commit or the version.
+  # uses: baptistecdr/release-edge-extension@be5d8392a77ea9c91fc1dc351301fd7ce27807e8
+  uses: baptistecdr/release-edge-extension@v1.0.0
+  with:
+    # The API key for the Edge Web Store API
+    api-key: ${{ secrets.EDGE_API_KEY }}
+    # The Client ID for the Edge Web Store API associated to the API key
+    client-id: ${{ secrets.EDGE_CLIENT_ID }}
+    # The Product ID of the Edge extension
+    product-id: "2e21bb95-3850-495a-9fd1-c2c7811c1dae"
+    # The path to the Edge extension zip file
+    product-path: "./chrome-extension/extension.zip"
+          
