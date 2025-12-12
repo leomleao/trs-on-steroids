@@ -16,7 +16,7 @@ jobs:
           zip -r extension.zip chrome-extension
 
       - name: Release to Edge Add-ons Store
-        uses: baptistecdr/release-edge-extension@v1.0.0
+        uses: baptistecdr/release-edge-extension@v2.0.1
         with:
           api-key: ${{ secrets.EDGE_API_KEY }}
           client-id: ${{ secrets.EDGE_CLIENT_ID }}
