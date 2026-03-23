@@ -1,6 +1,6 @@
 {
   "name": "TRS on Steroids",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "manifest_version": 3,
   "default_locale": "en",
   "description": "TRS requires resources to implement new features, this gives it steroids.",
@@ -9,16 +9,11 @@
     "32": "icon/icon-32x32.png",
     "64": "icon/icon-64x64.png"
   },
-  "permissions": ["tabs", "scripting", "activeTab"],
   "host_permissions": ["https://portal.theconfigteam.co.uk/*"],
-  "background": {
-    "service_worker": "background.js"
-  },
   "content_scripts": [
     {
-      "all_frames": true,
       "run_at": "document_idle",
-      "matches": ["https://portal.theconfigteam.co.uk/hd/*"],
+      "matches": ["https://portal.theconfigteam.co.uk/*"],
       "js": ["in-page.js"]
     }
   ],

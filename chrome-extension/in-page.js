@@ -1,14 +1,11 @@
-console.log("in-page.js loaded");
+if (window.__trsOnSteroidsInitialized) {
+	console.debug("TRS on Steroids already initialized in this frame, skipping bootstrap.");
+} else {
+	window.__trsOnSteroidsInitialized = true;
+	console.log("in-page.js loaded");
 
-window.ticketData = window.ticketData || {
-	lastComment: "",
-	personName: "",
-	previousToLastCommentDate: "",
-	nextContactDate: "",
-	lbl_total_time_CON: "",
-	lbl_total_time_CUS: "",
-	txt_ed_quote: ""
-};
+	const sharedWindow = getSharedWindow();
+	sharedWindow.ticketData = sharedWindow.ticketData || createEmptyTicketData();
 
 
 // ------------------------------------------
@@ -29,6 +26,393 @@ function waitForElement(selector, root = document) {
 
 		observer.observe(root, { childList: true, subtree: true });
 	});
+}
+
+async function waitForElementDeep(selector, root = document, timeoutMs = 10000, intervalMs = 250) {
+	const startedAt = Date.now();
+
+	while (Date.now() - startedAt < timeoutMs) {
+		const found = findElement(selector, root);
+		if (found) return found;
+
+		await new Promise(resolve => setTimeout(resolve, intervalMs));
+	}
+
+	return null;
+}
+
+function getSharedWindow() {
+	try {
+		return window.top || window;
+	} catch (error) {
+		return window;
+	}
+}
+
+function getTicketData() {
+	const sharedWindow = getSharedWindow();
+	sharedWindow.ticketData = sharedWindow.ticketData || createEmptyTicketData();
+	return sharedWindow.ticketData;
+}
+
+function createEmptyTicketData() {
+	return {
+		personName: "",
+		lastComment: "",
+		lastCommentDate: "",
+		previousToLastCommentDate: "",
+		nextContactDate: "",
+		totalTimeCON: 0,
+		totalTimeCUS: 0,
+		totalTicketTime: 0,
+		status: "",
+		title: "",
+		priority: "",
+		owner: "",
+		assignedTo: "",
+		loggedBy: "",
+		loggedDate: "",
+		externalId: "",
+		deliveryDate: "",
+		details: ""
+	};
+}
+
+function getInputValue(root, selector) {
+	const element = root.querySelector(selector);
+	return element?.value?.trim() || "";
+}
+
+function getTextContent(root, selector) {
+	const element = root.querySelector(selector);
+	return element?.textContent?.trim() || "";
+}
+
+function getNumericValue(root, selector) {
+	const rawValue = getTextContent(root, selector) || getInputValue(root, selector);
+	const parsed = Number(rawValue);
+	return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function getSelectedText(root, selector) {
+	const element = root.querySelector(selector);
+	if (!element) return "";
+
+	const selectedOption = element.selectedOptions?.[0];
+	return selectedOption?.textContent?.trim() || "";
+}
+
+function getOverviewFieldValue(root, label) {
+	const overview = root.querySelector("#tblHDID");
+	if (!overview) return "";
+
+	const lines = overview.innerText
+		.split(/\n+/)
+		.map(line => line.trim())
+		.filter(Boolean);
+
+	const labelIndex = lines.indexOf(`${label}:`);
+	return labelIndex >= 0 ? lines[labelIndex + 1] || "" : "";
+}
+
+function normalizeRichText(html) {
+	return html
+		.replace(/<p>/gi, "")
+		.replace(/<\/p>/gi, "\n")
+		.replace(/<br\s*\/?>/gi, "\n")
+		.replace(/&nbsp;/gi, " ")
+		.replace(/<[^>]+>/g, "")
+		.replace(/\n{3,}/g, "\n\n")
+		.trim();
+}
+
+function getTinyMceBody(root, dataId) {
+	const iframes = root.querySelectorAll("iframe");
+
+	for (const frame of iframes) {
+		try {
+			const frameDoc = frame.contentDocument || frame.contentWindow?.document;
+			const body = frameDoc?.querySelector(`body#tinymce[data-id="${dataId}"]`);
+			if (body) return body;
+		} catch (error) {
+		}
+	}
+
+	return null;
+}
+
+function getTinyMceText(root, dataId) {
+	const body = getTinyMceBody(root, dataId);
+	if (!body) return "";
+
+	return normalizeRichText(body.innerHTML);
+}
+
+async function waitForTinyMceText(root, dataId, timeoutMs = 10000, intervalMs = 250) {
+	const startedAt = Date.now();
+
+	while (Date.now() - startedAt < timeoutMs) {
+		const text = getTinyMceText(root, dataId);
+		if (text) return text;
+
+		await new Promise(resolve => setTimeout(resolve, intervalMs));
+	}
+
+	return "";
+}
+
+function parseUkDate(value) {
+	if (!value) return null;
+
+	const match = value.trim().match(/^(\d{2})\/(\d{2})\/(\d{4})(?:\s+(\d{2}):(\d{2})(?::(\d{2}))?)?$/);
+	if (!match) return null;
+
+	const [, day, month, year, hours = "0", minutes = "0", seconds = "0"] = match;
+	const parsed = new Date(
+		Number(year),
+		Number(month) - 1,
+		Number(day),
+		Number(hours),
+		Number(minutes),
+		Number(seconds)
+	);
+
+	return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function getDaysInPast(value) {
+	const parsedDate = value instanceof Date ? value : parseUkDate(value);
+	if (!parsedDate) return null;
+
+	const today = new Date();
+	const normalizedToday = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+	const normalizedDate = new Date(parsedDate.getFullYear(), parsedDate.getMonth(), parsedDate.getDate());
+	const differenceMs = normalizedToday - normalizedDate;
+
+	if (differenceMs <= 0) {
+		return 0;
+	}
+
+	return Math.floor(differenceMs / 86400000);
+}
+
+function buildTicketWarnings(ticketData, lastCustomerFacingCommentDate) {
+	const warnings = [];
+
+	const nextContactDaysPast = getDaysInPast(ticketData.nextContactDate);
+	if (nextContactDaysPast > 0) {
+		warnings.push(`The next contact date is ${nextContactDaysPast} day${nextContactDaysPast === 1 ? "" : "s"} in the past.`);
+	}
+
+	const deliveryDaysPast = getDaysInPast(ticketData.deliveryDate);
+	if (deliveryDaysPast > 0) {
+		warnings.push(`The delivery date is ${deliveryDaysPast} day${deliveryDaysPast === 1 ? "" : "s"} in the past.`);
+	}
+
+	const lastCommentDaysPast = getDaysInPast(lastCustomerFacingCommentDate);
+	if (lastCommentDaysPast > 7) {
+		warnings.push(`The last customer-facing comment is ${lastCommentDaysPast} days old.`);
+	}
+
+	if (ticketData.totalTimeCON > ticketData.totalTicketTime) {
+		warnings.push("Time spent is greater than the total ticket time.");
+	} else {
+		const remainingTime = ticketData.totalTicketTime - ticketData.totalTimeCON;
+		if (remainingTime === 0) {
+			warnings.push("No time left on this ticket.");
+		} else if (remainingTime < 1.25) {
+			warnings.push(`Only ${remainingTime.toFixed(2)} hour${remainingTime === 1 ? "" : "s"} remain before reaching the quoted time.`);
+		}
+	}
+
+	return warnings;
+}
+
+function renderTicketNotifications(ticketDoc, warnings) {
+	const titlePanel = ticketDoc.querySelector("#pan_ed_title");
+	if (!titlePanel) return;
+
+	let notificationPanel = ticketDoc.querySelector("#pan_ed_notification");
+	if (!notificationPanel) {
+		notificationPanel = ticketDoc.createElement("div");
+		notificationPanel.id = "pan_ed_notification";
+		notificationPanel.className = "ed_field";
+		notificationPanel.style.background = "#fff4e5";
+		notificationPanel.style.border = "1px solid #f0b35f";
+		notificationPanel.style.borderLeft = "6px solid #d97706";
+		notificationPanel.style.borderRadius = "6px";
+		notificationPanel.style.padding = "14px 18px";
+		notificationPanel.style.margin = "0 0 18px 0";
+		notificationPanel.style.color = "#7c2d12";
+		titlePanel.insertAdjacentElement("beforebegin", notificationPanel);
+	}
+
+	if (!warnings.length) {
+		notificationPanel.innerHTML = "";
+		notificationPanel.style.display = "none";
+		return;
+	}
+
+	const warningMarkup = warnings.map(message => `<li>${message}</li>`).join("");
+	notificationPanel.style.display = "";
+	notificationPanel.innerHTML = `
+		<div style="font-size: 16px; font-weight: 700; margin-bottom: 10px;">Notifications</div>
+		<ul style="margin: 0 0 0 18px; padding: 0; font-size: 14px; line-height: 1.5;">
+			${warningMarkup}
+		</ul>
+	`;
+}
+
+function getTicketDocument(root = document) {
+	const rootsToSearch = [root, document];
+
+	for (const currentRoot of rootsToSearch) {
+		if (!currentRoot?.querySelectorAll) continue;
+
+		const iframes = currentRoot.querySelectorAll('iframe[src*="/helpdesk/edit_popup"]');
+		for (const frame of iframes) {
+			try {
+				const ticketDoc = frame.contentDocument || frame.contentWindow?.document;
+				if (ticketDoc) return ticketDoc;
+			} catch (error) {
+			}
+		}
+	}
+
+	return null;
+}
+
+async function waitForTicketDocumentReady(root = document, timeoutMs = 10000, intervalMs = 250) {
+	const startedAt = Date.now();
+
+	while (Date.now() - startedAt < timeoutMs) {
+		const ticketDoc = getTicketDocument(root);
+		if (ticketDoc) {
+			const ticketTable = ticketDoc.querySelector("#tblHDID");
+			const comments = ticketDoc.querySelector("#udp_Comments");
+
+			if (ticketTable && comments) {
+				return ticketDoc;
+			}
+		}
+
+		await new Promise(resolve => setTimeout(resolve, intervalMs));
+	}
+
+	return null;
+}
+
+function getCurrentTicketSignature(root = document) {
+	const ticketDoc = getTicketDocument(root);
+	if (!ticketDoc) return "";
+
+	const ticketId = getOverviewFieldValue(ticketDoc, "ID");
+	const title = getInputValue(ticketDoc, "#txt_ed_title");
+	const deliveryDate = getInputValue(ticketDoc, "#txt_ed_solution_del_date");
+
+	return [ticketId, title, deliveryDate].join("|");
+}
+
+function watchTicketFrameChanges(root = document) {
+	if (root.__trsTicketWatcherStarted) {
+		return;
+	}
+	root.__trsTicketWatcherStarted = true;
+
+	let lastTicketFrameSrc = "";
+	let lastTicketSignature = "";
+	let refreshInFlight = false;
+
+	const triggerRefresh = async () => {
+		if (refreshInFlight) return;
+
+		refreshInFlight = true;
+		try {
+			await refreshTicketData(root);
+		} finally {
+			refreshInFlight = false;
+		}
+	};
+
+	const checkTicketSignature = () => {
+		const currentSignature = getCurrentTicketSignature(root);
+		if (!currentSignature || currentSignature === lastTicketSignature) {
+			return;
+		}
+
+		lastTicketSignature = currentSignature;
+		triggerRefresh();
+	};
+
+	const bindTicketFrame = frame => {
+		if (!(frame instanceof HTMLIFrameElement)) return;
+		if (!frame.src.includes("/helpdesk/edit_popup")) return;
+		if (frame.dataset.trsTicketWatcherBound === "true") return;
+
+		frame.dataset.trsTicketWatcherBound = "true";
+		frame.addEventListener("load", () => {
+			const currentSrc = frame.getAttribute("src") || "";
+			if (currentSrc !== lastTicketFrameSrc) {
+				lastTicketFrameSrc = currentSrc;
+			}
+			triggerRefresh();
+			setTimeout(checkTicketSignature, 250);
+			setTimeout(checkTicketSignature, 1000);
+		});
+	};
+
+	const existingFrames = root.querySelectorAll('iframe[src*="/helpdesk/edit_popup"]');
+	for (const frame of existingFrames) {
+		lastTicketFrameSrc = frame.getAttribute("src") || lastTicketFrameSrc;
+		bindTicketFrame(frame);
+	}
+
+	const observer = new MutationObserver(mutations => {
+		for (const mutation of mutations) {
+			if (mutation.type === "attributes" && mutation.target instanceof HTMLIFrameElement) {
+				const frame = mutation.target;
+				if (!frame.src.includes("/helpdesk/edit_popup")) continue;
+
+				const currentSrc = frame.getAttribute("src") || "";
+				if (currentSrc && currentSrc !== lastTicketFrameSrc) {
+					lastTicketFrameSrc = currentSrc;
+					bindTicketFrame(frame);
+					triggerRefresh();
+				}
+			}
+
+			for (const node of mutation.addedNodes) {
+				if (!(node instanceof Element)) continue;
+
+				if (node.matches?.('iframe[src*="/helpdesk/edit_popup"]')) {
+					const frame = node;
+					lastTicketFrameSrc = frame.getAttribute("src") || lastTicketFrameSrc;
+					bindTicketFrame(frame);
+					triggerRefresh();
+					setTimeout(checkTicketSignature, 250);
+					continue;
+				}
+
+				const nestedFrames = node.querySelectorAll?.('iframe[src*="/helpdesk/edit_popup"]') || [];
+				for (const frame of nestedFrames) {
+					lastTicketFrameSrc = frame.getAttribute("src") || lastTicketFrameSrc;
+					bindTicketFrame(frame);
+					triggerRefresh();
+					setTimeout(checkTicketSignature, 250);
+				}
+			}
+		}
+	});
+
+	observer.observe(root, {
+		childList: true,
+		subtree: true,
+		attributes: true,
+		attributeFilter: ["src"]
+	});
+
+	checkTicketSignature();
+	root.__trsTicketSignatureInterval = window.setInterval(checkTicketSignature, 1000);
 }
 
 /**
@@ -112,7 +496,7 @@ function fillTemplate(template, data = {}) {
 
 			// Special handling for personName
 			if (key === "personName" && typeof value === "string") {
-				const emailMatch = value.match(/([a-zA-Z0-9._%+-]+@eviosys\.[a-zA-Z]{2,})/);
+				const emailMatch = value.match(/([a-zA-Z0-9._%+-]+@sonoco\.[a-zA-Z]{2,})/);
 				if (emailMatch) {
 					return `@[${emailMatch[1]}]`;
 				}
@@ -129,32 +513,98 @@ function fillTemplate(template, data = {}) {
 // Utility: Button factory
 // ------------------------------------------
 
-function createTemplateButton(label, id, template) {
-	const button = document.createElement("button");
-	button.id = id;
-	button.type = "button";
-	button.className = "ui-button ui-corner-all ui-widget";
-	button.textContent = label;
+function getCommentEditorBody() {
+	const iframe = findElement("#txt_ed_comment_ifr");
+	if (!iframe) return null;
 
-	button.addEventListener("click", () => {
-		const result = fillTemplate(template, window.ticketData);
+	const doc = iframe.contentDocument || iframe.contentWindow.document;
+	if (!doc) return null;
 
-		const iframe = findElement("#txt_ed_comment_ifr");
-		if (!iframe) return null;
+	const tiny = doc.querySelector("#tinymce");
+	if (!tiny) {
+		alert("TinyMCE not found.");
+		return null;
+	}
 
-		const doc = iframe.contentDocument || iframe.contentWindow.document;
-		if (!doc) return null;
+	return tiny;
+}
 
-		const tiny = doc.querySelector("#tinymce");
+function applyTemplateToCommentEditor(template) {
+	const tiny = getCommentEditorBody();
+	if (!tiny) return null;
+
+	const result = fillTemplate(template, getTicketData());
+	tiny.innerHTML = result;
+	return tiny;
+}
+
+function createTemplateDropdown(templates) {
+	const wrapper = document.createElement("span");
+	wrapper.id = "template-picker-wrapper";
+	wrapper.style.display = "inline-flex";
+	wrapper.style.alignItems = "center";
+	wrapper.style.gap = "6px";
+	wrapper.style.verticalAlign = "middle";
+
+	const select = document.createElement("select");
+	select.id = "template-picker";
+	select.className = "ui-button ui-corner-all ui-widget";
+	select.style.minWidth = "140px";
+	select.style.margin = "0 8px 0 0";
+	select.style.verticalAlign = "middle";
+	select.style.textAlign = "left";
+	select.style.padding = ".32em 1em";
+	select.setAttribute("aria-label", "Apply Template");
+
+	const placeholder = document.createElement("option");
+	placeholder.value = "";
+	placeholder.textContent = "Apply Template";
+	select.appendChild(placeholder);
+
+	const options = [
+		{ label: "3rd Strike", value: "template1" },
+		{ label: "2nd Strike", value: "template2" },
+		{ label: "Closure", value: "template3" }
+	];
+
+	for (const optionConfig of options) {
+		const option = document.createElement("option");
+		option.value = optionConfig.value;
+		option.textContent = optionConfig.label;
+		select.appendChild(option);
+	}
+
+	let originalContent = null;
+
+	select.addEventListener("change", () => {
+		const tiny = getCommentEditorBody();
 		if (!tiny) {
-			alert("TinyMCE not found.");
+			select.value = "";
 			return;
 		}
 
-		tiny.innerHTML = result;
+		if (select.value === "") {
+			if (originalContent !== null) {
+				tiny.innerHTML = originalContent;
+			}
+			originalContent = null;
+			return;
+		}
+
+		if (!templates[select.value]) {
+			return;
+		}
+
+		if (originalContent === null) {
+			originalContent = tiny.innerHTML;
+		}
+
+		applyTemplateToCommentEditor(templates[select.value]);
 	});
 
-	return button;
+	wrapper.appendChild(select);
+
+	return wrapper;
 }
 
 function createSingleLineSummaryButton(label, id) {
@@ -177,7 +627,7 @@ function createSingleLineSummaryButton(label, id) {
 			return;
 		}
 
-		currentComment = tiny.innerHTML;
+		const currentComment = tiny.innerHTML;
 
 		// -------------------------
 		// 1. Generate single-line summary
@@ -225,7 +675,7 @@ function createSingleLineSummaryButton(label, id) {
 
 			// Fallback if PromptAI is not available
 			if (!singleLineSummary) {
-				console.log("Single line summary falls back to summarizer")
+				console.log("Single line summary falls back to summarizer");
 
 				const summarizer = await Summarizer.create({
 					sharedContext: "Summarize comments into a single sentence.",
@@ -234,10 +684,10 @@ function createSingleLineSummaryButton(label, id) {
 					expectedInputLanguages: ["en-GB"],
 					outputLanguage: "en-GB"
 				});
-				const singleLineSummary = await summarizerSession.summarize(textToBeSummarized);
-
-				summaryField.value = singleLineSummary;
+				singleLineSummary = await summarizer.summarize(currentComment);
 			}
+
+			summaryField.value = singleLineSummary;
 
 
 			// -------------------------
@@ -297,17 +747,13 @@ function createSingleLineSummaryButton(label, id) {
 // ------------------------------------------
 function addTemplateButtons(container, templates) {
 	// Prevent duplicates
-	if (document.getElementById("first-strike")) return;
+	if (container.querySelector("#template-picker-wrapper")) return;
 
 	const btn1 = createSingleLineSummaryButton("Fill time", "single-line-summary");
-	const btn2 = createTemplateButton("3rd Strike", "first-strike", templates.template1);
-	const btn3 = createTemplateButton("2nd Strike", "second-strike", templates.template2);
-	const btn4 = createTemplateButton("Closure", "closure", templates.template3);
+	const templateDropdown = createTemplateDropdown(templates);
 
 	container.appendChild(btn1);
-	container.appendChild(btn2);
-	container.appendChild(btn3);
-	container.appendChild(btn4);
+	container.appendChild(templateDropdown);
 }
 
 // ------------------------------------------
@@ -505,13 +951,13 @@ async function init() {
 	console.log("Initializing extension…");
 	initUI();            // Your Extract & Summarise feature
 	try {
-		url = chrome.runtime.getURL('templates.json');
+		const url = chrome.runtime.getURL("templates.json");
 		const res = await fetch(url);
 		if (!res.ok) throw new Error(`HTTP ${res.status}`);
 		const templates = await res.json();
 		watchCommentEditor(templates);
 	} catch (e) {
-		console.error('Could not load templates', e);
+		console.error("Could not load templates", e);
 	}
 }
 init();
@@ -530,7 +976,7 @@ async function initUI() {
 	const dialog = await waitForElement(".ui-dialog");
 	const buttonBar = await waitForElement(".ui-dialog-buttonset", dialog);
 
-	if (document.getElementById("extract-btn")) return;
+	if (buttonBar.querySelector("#extract-btn")) return;
 
 	const newButton = document.createElement("button");
 	newButton.id = "extract-btn";
@@ -545,6 +991,7 @@ async function initUI() {
 	console.log("Extract+Summarise button added.");
 
 	refreshTicketData(dialog);
+	watchTicketFrameChanges(dialog);
 }
 
 async function onExtractCommentsClick() {
@@ -676,9 +1123,13 @@ async function generateKeyPoints(input, keyPointsBox) {
 async function refreshTicketData(dialog) {
 
 	console.log("Ticket opened → refreshing ticketData");
-	const ticketDoc = findElement("#tblHDID", dialog)
-	console.log(ticketDoc);
-	const commentSection = findElement("#udp_Comments", dialog);
+	const ticketDoc = await waitForTicketDocumentReady(dialog);
+	if (!ticketDoc) {
+		console.info("Could not resolve the ticket iframe document. refreshTicketData");
+		return;
+	}
+
+	const commentSection = ticketDoc.querySelector("#udp_Comments");
 	if (!commentSection) {
 		console.info("Could not find udp_Comments. refreshTicketData");
 		return;
@@ -688,39 +1139,72 @@ async function refreshTicketData(dialog) {
 	const lastCommentObj = getLastCustomerFacingComment(comments);
 	const prevCommentObj = getPreviousToLastCustomerFacingComment(comments);
 
-	// Reset object
-	window.ticketData.personName = "";
-	window.ticketData.lastComment = "";
-	window.ticketData.lastCommentDate = "";
-	window.ticketData.previousToLastCommentDate = "";
-	window.ticketData.nextContactDate = "";
-	window.ticketData.totalTimeCON = "";
-	window.ticketData.totalTimeCUS = "";
-	window.ticketData.totalTicketTime = "";
+	const nextTicketData = createEmptyTicketData();
+	nextTicketData.personName = getInputValue(ticketDoc, "#txt_ed_reported_by");
+	nextTicketData.lastComment = lastCommentObj?.content ?? "";
+	nextTicketData.lastCommentDate = lastCommentObj?.date ? new Date(lastCommentObj.date).toLocaleDateString("en-GB") : "";
+	nextTicketData.previousToLastCommentDate = prevCommentObj?.date ? new Date(prevCommentObj.date).toLocaleDateString("en-GB") : "";
+	nextTicketData.nextContactDate = getInputValue(ticketDoc, "#txt_next_contact_date");
+	nextTicketData.totalTimeCON = getNumericValue(ticketDoc, "#lbl_total_time_CON");
+	nextTicketData.totalTimeCUS = getNumericValue(ticketDoc, "#lbl_total_time_CUS");
+	nextTicketData.totalTicketTime = getNumericValue(ticketDoc, "#txt_ed_quote");
+	nextTicketData.status = getSelectedText(ticketDoc, "#ddl_status");
+	nextTicketData.title = getInputValue(ticketDoc, "#txt_ed_title");
+	nextTicketData.priority = getSelectedText(ticketDoc, "#ddl_ed_priority");
+	nextTicketData.owner = getSelectedText(ticketDoc, "#ddl_owner");
+	nextTicketData.assignedTo = getSelectedText(ticketDoc, "#ddl_assigned_to");
+	nextTicketData.loggedBy = getTextContent(ticketDoc, "#lbl_ed_logged_by2");
+	nextTicketData.loggedDate = getTextContent(ticketDoc, "#lbl_logged_date");
+	nextTicketData.externalId = getOverviewFieldValue(ticketDoc, "External ID");
+	nextTicketData.deliveryDate = getInputValue(ticketDoc, "#txt_ed_solution_del_date");
+	nextTicketData.details = await waitForTinyMceText(ticketDoc, "txt_ed_details");
 
-	// Fill using selectors (replace your own criteria)
-	window.ticketData.personName = ticketDoc.querySelector("#txt_ed_reported_by").value.trim() || "";
-	window.ticketData.lastComment = lastCommentObj?.content ?? "";
-	window.ticketData.lastCommentDate = lastCommentObj?.date ? new Date(lastCommentObj.date).toLocaleDateString("en-GB") : "";
-	window.ticketData.previousToLastCommentDate = ticketData.previousToLastCommentDate = prevCommentObj?.date ? new Date(prevCommentObj.date).toLocaleDateString("en-GB"): "";
-	window.ticketData.nextContactDate = ticketDoc.querySelector("#txt_next_contact_date").value.trim() || "";
-	window.ticketData.totalTimeCON = Number(ticketDoc.querySelector("#lbl_total_time_CON").innerText) || "";
-	window.ticketData.totalTimeCUS = Number(ticketDoc.querySelector("#lbl_total_time_CUS").innerText) || "";
-	window.ticketData.totalTicketTime = ticketDoc.querySelector("#txt_ed_quote").value || "";
+	const warnings = buildTicketWarnings(nextTicketData, lastCommentObj?.date ?? null);
+	renderTicketNotifications(ticketDoc, warnings);
 
-	console.log("ticketData updated:", window.ticketData);
+	getSharedWindow().ticketData = nextTicketData;
+	console.log("ticketData updated:", getTicketData());
 
 }
 
 async function watchCommentEditor(templates) {
-	while (true) {
-		const editor = await waitForElement("#divEditHDEntryComment_IO");
+	const processedEditors = new WeakSet();
 
-		addTemplateButtons(editor, templates);
+	const attachButtons = (root = document) => {
+		const editors = root.querySelectorAll("#divEditHDEntryComment_IO");
+		for (const editor of editors) {
+			if (processedEditors.has(editor)) continue;
 
-		// short sleep to avoid duplicate button injection
-		await new Promise(r => setTimeout(r, 2000));
-	}
+			addTemplateButtons(editor, templates);
+			processedEditors.add(editor);
+		}
+	};
+
+	attachButtons();
+	await waitForElement("#divEditHDEntryComment_IO");
+	attachButtons();
+
+	const observer = new MutationObserver(mutations => {
+		for (const mutation of mutations) {
+			for (const node of mutation.addedNodes) {
+				if (!(node instanceof Element)) continue;
+
+				if (node.matches("#divEditHDEntryComment_IO")) {
+					attachButtons(node.parentElement || document);
+					continue;
+				}
+
+				if (node.querySelector("#divEditHDEntryComment_IO")) {
+					attachButtons(node);
+				}
+			}
+		}
+	});
+
+	observer.observe(document.documentElement, {
+		childList: true,
+		subtree: true
+	});
 }
 
 async function typewriterUpdate(stream, Element, delay = 20) {
@@ -736,4 +1220,4 @@ async function typewriterUpdate(stream, Element, delay = 20) {
 	}
 }
 
-
+}
