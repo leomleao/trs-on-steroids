@@ -16,8 +16,6 @@ concurrency:
 jobs:
   release:
     runs-on: ubuntu-latest
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
     steps:
       - name: Checkout repo
@@ -28,8 +26,9 @@ jobs:
         run: zip -r ../extension.zip .
 
       - name: Publish Edge Add-on
-        uses: PlasmoHQ/bpp@v3
+        uses: baptistecdr/release-edge-extension
         with:
-          keys: ${{ secrets.BPP_KEYS }}
-          edge-file: "./extension.zip"
-          version-file: "chrome-extension/manifest.json"
+          api-key: ${{ secrets.EDGE_API_KEY }}
+          client-id: ${{ secrets.EDGE_CLIENT_ID }}
+          product-id: "2e21bb95-3850-495a-9fd1-c2c7811c1dae"
+          product-path: "./extension.zip"
