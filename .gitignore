@@ -2,4 +2,6 @@
 *.pem
 *.zip
 
+.secrets
+
 .edge-debug-profile/*
