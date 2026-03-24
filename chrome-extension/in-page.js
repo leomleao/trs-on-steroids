@@ -251,7 +251,7 @@ function buildTicketWarnings(ticketData, lastCustomerFacingCommentDate) {
 		warnings.push("This ticket is unassigned.");
 	}
 
-	if (normalizedPriority && normalizedPriority !== "p4" && lastCommentDaysPast > 3) {
+	if (normalizedPriority && normalizedPriority !== "p4 - low" && lastCommentDaysPast > 3) {
 		warnings.push(`This ${ticketData.priority} ${ticketData.entryType} has no customer-facing update for ${lastCommentDaysPast} days.`);
 	} else if (lastCommentDaysPast > 7) {
 		warnings.push(`The last customer-facing comment is ${lastCommentDaysPast} days old.`);
