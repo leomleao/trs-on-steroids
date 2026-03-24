@@ -220,7 +220,8 @@ function buildTicketWarnings(ticketData, lastCustomerFacingCommentDate) {
 
 	if (isClosedTicket) {
 		if (ticketData.totalTimeCON > ticketData.totalTicketTime) {
-			warnings.push("Time spent is greater than the total ticket time.");
+			const timeOver = ticketData.totalTimeCON - ticketData.totalTicketTime;
+			warnings.push(`Time spent is ${timeOver.toFixed(2)} hour${timeOver === 1 ? "" : "s"} over the total ticket time.`);
 		}
 
 		return warnings;
@@ -250,13 +251,17 @@ function buildTicketWarnings(ticketData, lastCustomerFacingCommentDate) {
 	}
 
 	if (normalizedPriority && normalizedPriority !== "p4" && lastCommentDaysPast > 3) {
-		warnings.push(`This ${ticketData.priority} ticket has no customer-facing update for ${lastCommentDaysPast} days.`);
+		warnings.push(`This ${ticketData.priority} ${ticketData.entryType} has no customer-facing update for ${lastCommentDaysPast} days.`);
 	} else if (lastCommentDaysPast > 7) {
 		warnings.push(`The last customer-facing comment is ${lastCommentDaysPast} days old.`);
 	}
 
-	if (ticketData.totalTimeCON > ticketData.totalTicketTime) {
-		warnings.push("Time spent is greater than the total ticket time.");
+	if (ticketData.totalTicketTime < 0) {
+		const extraTime = Math.abs(ticketData.totalTicketTime);
+		warnings.push(`This ticket is ${extraTime.toFixed(2)} extra hour${extraTime === 1 ? "" : "s"}.`);
+	} else if (ticketData.totalTimeCON > ticketData.totalTicketTime) {
+		const timeOver = ticketData.totalTimeCON - ticketData.totalTicketTime;
+		warnings.push(`Time spent is ${timeOver.toFixed(2)} hour${timeOver === 1 ? "" : "s"} over the total ticket time.`);
 	} else {
 		const remainingTime = ticketData.totalTicketTime - ticketData.totalTimeCON;
 		if (remainingTime === 0) {
@@ -270,6 +275,11 @@ function buildTicketWarnings(ticketData, lastCustomerFacingCommentDate) {
 }
 
 function renderTicketNotifications(ticketDoc, warnings) {
+	const hiddenToolbar = ticketDoc.querySelector('div[style*="visibility:hidden"] #lb_save_general')?.parentElement;
+	if (hiddenToolbar) {
+		hiddenToolbar.style.display = "none";
+	}
+
 	const titlePanel = ticketDoc.querySelector("#pan_ed_title");
 	if (!titlePanel) return;
 
@@ -1015,21 +1025,41 @@ async function initUI() {
 	console.log("Waiting for .ui-dialog…");
 
 	const dialog = await waitForElement(".ui-dialog");
-	const buttonBar = await waitForElement(".ui-dialog-buttonset", dialog);
+	const ensureExtractButton = () => {
+		const buttonBar = dialog.querySelector(".ui-dialog-buttonset");
+		if (!buttonBar || buttonBar.querySelector("#extract-btn")) return;
 
-	if (buttonBar.querySelector("#extract-btn")) return;
+		const newButton = document.createElement("button");
+		newButton.id = "extract-btn";
+		newButton.type = "button";
+		newButton.className = "ui-button ui-corner-all ui-widget";
+		newButton.textContent = "Extract & Summarise Comments";
+		newButton.addEventListener("click", onExtractCommentsClick);
 
-	const newButton = document.createElement("button");
-	newButton.id = "extract-btn";
-	newButton.type = "button";
-	newButton.className = "ui-button ui-corner-all ui-widget";
-	newButton.textContent = "Extract & Summarise Comments";
+		if (buttonBar.firstElementChild) {
+			buttonBar.firstElementChild.insertAdjacentElement("beforebegin", newButton);
+		} else {
+			buttonBar.appendChild(newButton);
+		}
 
-	newButton.addEventListener("click", onExtractCommentsClick);
+		console.log("Extract+Summarise button added.");
+	};
 
-	buttonBar.firstElementChild.insertAdjacentElement("beforebegin", newButton);
+	await waitForElement(".ui-dialog-buttonset", dialog);
+	ensureExtractButton();
 
-	console.log("Extract+Summarise button added.");
+	if (!dialog.__trsExtractButtonObserver) {
+		const observer = new MutationObserver(() => {
+			ensureExtractButton();
+		});
+
+		observer.observe(dialog, {
+			childList: true,
+			subtree: true
+		});
+
+		dialog.__trsExtractButtonObserver = observer;
+	}
 
 	refreshTicketData(dialog);
 	watchTicketFrameChanges(dialog);
