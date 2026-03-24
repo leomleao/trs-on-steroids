@@ -75,7 +75,8 @@ function createEmptyTicketData() {
 		loggedDate: "",
 		externalId: "",
 		deliveryDate: "",
-		details: ""
+		details: "",
+		comments: []
 	};
 }
 
@@ -989,7 +990,11 @@ function insertSummaryBox(targetFieldset) {
 `;
 	// Insert right after the legend inside the target fieldset
 	const fieldset = targetFieldset.querySelector("fieldset");
-	fieldset.insertAdjacentElement("beforebegin", wrapper);
+	if (!fieldset) {
+		targetFieldset.prepend(wrapper);
+	} else {
+		fieldset.insertAdjacentElement("beforebegin", wrapper);
+	}
 
 	return {
 		summaryBox: wrapper.querySelector("#ai-summary-box"),
@@ -1068,101 +1073,97 @@ async function initUI() {
 async function onExtractCommentsClick() {
 	console.log("Extract & Summarise comments clicked");
 
-	const summary = findElement("#ai-summary-box");
-	if (summary) {
+	if (findElement("#ai-summary-box")) {
 		console.info("AI summary already present, no need to add another one.");
+		return;
+	}
+
+	const comments = getTicketData().comments;
+	if (!comments?.length) {
+		console.info("No cached comments available. Ticket data may not have loaded yet.");
 		return;
 	}
 
 	const commentSection = findElement("#udp_Comments");
 	if (!commentSection) {
-		console.info("Could not find udp_Comments. onExtractCommentsClick");
-		return;
-	}
-
-	const comments = extractComments(commentSection);
-	if (!comments.length) {
-		console.info("No comments found. onExtractCommentsClick");
+		console.info("Could not find udp_Comments for UI insertion. onExtractCommentsClick");
 		return;
 	}
 
 	const inputForAI = prepareCommentsForSummarizer(comments);
+	const { summaryBox, keyPoints: keyPointsBox } = insertSummaryBox(commentSection);
 
-	const summaryElements = insertSummaryBox(commentSection);
-	const summaryBox = summaryElements.summaryBox;
-	const keyPointsBox = summaryElements.keyPoints;
-
-	await generateSummary(inputForAI, summaryBox);
-	await generateKeyPoints(inputForAI, keyPointsBox);
+	await Promise.all([
+		generateSummary(inputForAI, summaryBox),
+		generateKeyPoints(inputForAI, keyPointsBox)
+	]);
 }
+
+// ---------------------------
+// AI prompt definitions
+// ---------------------------
+const AI_PROMPTS = {
+	summarySystem: `You are an assistant that summarizes support ticket comments.
+Always respond in English.
+Only use information explicitly present in the comments provided.
+Do not add speculation or information not present in the input.`,
+
+	summaryUser: (input) =>
+		`Summarize the following support ticket comments into 2-3 concise paragraphs.\nFocus on: current status, any blockers, next actions, and customer-visible context.\nOrder from most recent to earliest context.\n\n${input}`,
+
+	keyPointsSystem: `You are an assistant that extracts milestones from support ticket comments.
+Always respond in English.
+Only use information explicitly present in the comments provided.`,
+
+	keyPointsUser: (input) =>
+		`Extract the key milestones or turning points from these support ticket comments.\nReturn each point as a plain sentence on its own line, from most recent to oldest.\n\n${input}`
+};
 
 // ---------------------------
 // Generate summary
 // ---------------------------
 async function generateSummary(input, summaryBox) {
-	try {
-		// 1. Check if Prompt API is available
-		const hasPromptAPI = typeof LanguageModel !== "undefined";
-		let usedPromptAPI = false;
+	const hasPromptAPI = typeof LanguageModel !== "undefined";
 
-		if (hasPromptAPI) {
+	if (hasPromptAPI) {
+		const languageOptions = {
+			expectedInputs: [{ type: "text", languages: ["en"] }],
+			expectedOutputs: [{ type: "text", languages: ["en"] }]
+		};
+		const availability = await LanguageModel.availability(languageOptions);
+		if (availability === "available") {
+			const session = await LanguageModel.create({
+				...languageOptions,
+				initialPrompts: [{ role: "system", content: AI_PROMPTS.summarySystem }],
+				temperature: 0.4,
+				topK: 20
+			});
 			try {
-				// Check model availability
-				const availability = await LanguageModel.availability();
-				if (availability === "available") {
-					usedPromptAPI = true;
-
-					// Create a session with a system prompt for summarization
-					const session = await LanguageModel.create({
-						initialPrompts: [
-							{
-								role: "system",
-								content: "You are an assistant that summarizes user comments for display in a web interface.Avoid unnecessary text. Focus on the main points and latest updates. Keep it concise. You are a helpful assistant."
-							}
-						]
-					});
-
-					// Run prompting for summary
-					const prompt = [
-						{
-							role: "user",
-							content: `Summarize the following user comments into paragraphs, focusing on main points and latest updates:\n\n${input}`
-						}
-					];
-
-					const stream = session.promptStreaming(prompt);
-
-					await typewriterUpdate(stream, summaryBox, 5);
-
-				}
+				const stream = session.promptStreaming(AI_PROMPTS.summaryUser(input));
+				await typewriterUpdate(stream, summaryBox, 5);
+				return;
 			} catch (err) {
-				console.warn("Prompt API available but failed:", err);
-				usedPromptAPI = false;
+				console.warn("LanguageModel summary failed, falling back to Summarizer:", err);
+			} finally {
+				session.destroy();
 			}
 		}
+	}
 
-		// 2. Fallback to existing Summarizer if Prompt API not used
-		if (!usedPromptAPI) {
-			// Insert fallback indicator
-			summaryBox.textContent = "Generating summary...";
-
-			const summarizer = await Summarizer.create({
-				sharedContext:
-					"A general summary of what the comments have discussed so far, emphasizing the latest status.",
-				type: "tldr",
-				length: "short",
-				expectedInputLanguages: ["en-GB"],
-				outputLanguage: "en-GB",
-			});
-
-			const stream = await summarizer.summarizeStreaming(input);
-
-			// Show streaming output
-			await typewriterUpdate(stream, summaryBox, 5);
-		}
+	// Fallback: Summarizer API
+	try {
+		const summarizer = await Summarizer.create({
+			sharedContext: "A general summary of support ticket comments, emphasizing latest status, blockers, and next actions.",
+			type: "tldr",
+			length: "short",
+			expectedInputLanguages: ["en-GB"],
+			outputLanguage: "en-GB"
+		});
+		const stream = await summarizer.summarizeStreaming(input);
+		await typewriterUpdate(stream, summaryBox, 5);
 	} catch (err) {
 		summaryBox.textContent = "Failed to generate summary.";
-		console.error("Summariser error:", err);
+		console.error("generateSummary fallback failed:", err);
 	}
 }
 
@@ -1170,21 +1171,47 @@ async function generateSummary(input, summaryBox) {
 // Generate key points
 // ---------------------------
 async function generateKeyPoints(input, keyPointsBox) {
+	const hasPromptAPI = typeof LanguageModel !== "undefined";
+
+	if (hasPromptAPI) {
+		const languageOptions = {
+			expectedInputs: [{ type: "text", languages: ["en"] }],
+			expectedOutputs: [{ type: "text", languages: ["en"] }]
+		};
+		const availability = await LanguageModel.availability(languageOptions);
+		if (availability === "available") {
+			const session = await LanguageModel.create({
+				...languageOptions,
+				initialPrompts: [{ role: "system", content: AI_PROMPTS.keyPointsSystem }],
+				temperature: 0.3,
+				topK: 15
+			});
+			try {
+				const result = await session.prompt(AI_PROMPTS.keyPointsUser(input));
+				keyPointsBox.innerHTML = convertTextToList(result);
+				return;
+			} catch (err) {
+				console.warn("LanguageModel key points failed, falling back to Summarizer:", err);
+			} finally {
+				session.destroy();
+			}
+		}
+	}
+
+	// Fallback: Summarizer API
 	try {
 		const summarizer = await Summarizer.create({
-			sharedContext:
-				"A list of key-points of how the comments have evolved, from the latest to earliest.",
+			sharedContext: "A list of key milestones showing how the support ticket evolved, from latest to earliest.",
 			type: "key-points",
 			length: "medium",
 			expectedInputLanguages: ["en-GB"],
-			outputLanguage: "en-GB",
+			outputLanguage: "en-GB"
 		});
-
 		const keyPoints = await summarizer.summarize(input);
 		keyPointsBox.innerHTML = convertTextToList(keyPoints);
 	} catch (err) {
-		keyPointsBox.innerHTML = "Failed to generate key points.";
-		console.error("Summariser error:", err);
+		keyPointsBox.textContent = "Failed to generate key points.";
+		console.error("generateKeyPoints fallback failed:", err);
 	}
 }
 
@@ -1230,6 +1257,7 @@ async function refreshTicketData(dialog) {
 	nextTicketData.externalId = getOverviewFieldValue(ticketDoc, "External ID");
 	nextTicketData.deliveryDate = getInputValue(ticketDoc, "#txt_ed_solution_del_date");
 	nextTicketData.details = await waitForTinyMceText(ticketDoc, "txt_ed_details");
+	nextTicketData.comments = comments;
 
 	const warnings = buildTicketWarnings(nextTicketData, lastCommentObj?.date ?? null);
 	renderTicketNotifications(ticketDoc, warnings);

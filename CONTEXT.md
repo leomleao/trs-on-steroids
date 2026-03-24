@@ -205,32 +205,85 @@ There is also session work not yet committed:
   - TinyMCE `body#tinymce[data-id="txt_ed_details"]`
 
 ## 10. Remaining Work or TODOs
-- Main outstanding issue:
+- Main outstanding issue (previous session):
   - ticket switching still may not reliably refresh `ticketData`
   - user explicitly reported: opening another ticket still kept old-ticket data and comments
-- Recommended next debugging step:
-  - add targeted console logs around:
-    - current resolved ticket ID from `#tblHDID`
-    - ticket signature changes
-    - when `refreshTicketData(...)` is invoked
-    - which iframe/document `getTicketDocument(...)` selected
+  - **Status as of latest session**: user believes this has been fixed — needs verification in practice
 - Additional possible follow-up:
   - more notification rules
   - template customization/storage improvements
   - time-filling enhancements using richer ticket context
-- Uncommitted workspace items at the time of writing:
-  - `.gitignore` modified outside this session’s extension work
-  - `roadmap.md` untracked
 
 ## 11. Context for Future AI
 - The important session work is already committed in:
   - `ecfe484 Refactor TRS ticket context extraction and comment tooling`
 - The big structural change is that ticket data is now intended to come from the real `/helpdesk/edit_popup` iframe, not the outer `/hd/...` page.
 - `ticketData` is no longer meant to be frame-local; use the shared top-window helpers.
+- `ticketData` now also includes `comments: []` — the full structured comment array from `extractComments()`.
 - The user spent time validating real ticket DOM structure, including:
   - `status` select
   - `deliveryDate` input
   - `details` TinyMCE body
 - The notification area and template dropdown are implemented and working directionally.
-- The most important unresolved problem is stale ticket data when moving between tickets. Multiple watcher-based fixes were attempted, but the user still reported that opening a second ticket did not trigger a correct refresh.
-- If continuing from here, prioritize diagnosing the current ticket-switch path before adding more features.
+- The ticket-switch stale-data issue was previously unresolved; the user believes it is now fixed (as of the latest session) but it should be verified when switching tickets in practice.
+
+---
+
+## Session 2 — Extract & Summarise Refactor + Local AI Improvements
+
+### Overview
+Refactored the Extract & Summarise Comments flow to use cached ticket data instead of re-scanning the DOM on every button click. Improved the local AI integration (Chrome Prompt API / Phi-4-mini) with better prompts, explicit output language, tuned sampling parameters, session cleanup, and a LanguageModel-first path for key-points generation which previously used only Summarizer.
+
+### Problems Addressed
+- `onExtractCommentsClick()` was re-calling `extractComments()` on every click, duplicating DOM work already done by `refreshTicketData()`.
+- `generateKeyPoints()` had no LanguageModel path at all — only Summarizer.
+- `LanguageModel` sessions were never destroyed after use, leaking memory.
+- System prompts were vague and did not ground the model or enforce English output.
+- The browser warning about missing output language was not being addressed correctly.
+- Summary and key-points were generated sequentially; they are independent and can run concurrently.
+- `insertSummaryBox()` would crash if the target had no `fieldset` child.
+
+### Key Changes
+
+#### `createEmptyTicketData()` (~line 58)
+- Added `comments: []` to the returned shape.
+- Stores the full structured comment array so other features can access it without re-parsing.
+
+#### `refreshTicketData()` (~line 1213)
+- After calling `extractComments()`, now also persists the result to `nextTicketData.comments`.
+- `extractComments()` itself is unchanged — still the single DOM parsing source.
+
+#### `onExtractCommentsClick()` (~line 1069)
+- Removed direct call to `extractComments()` and DOM lookup for the comment section.
+- Now reads from `getTicketData().comments` — fast, no re-scan.
+- Graceful early return with console message if comments are not yet cached.
+- Changed sequential `await generateSummary(...); await generateKeyPoints(...)` to `Promise.all([...])` for concurrent execution.
+
+#### `AI_PROMPTS` constants (~line 1098)
+- Extracted all prompt strings into a single `AI_PROMPTS` object before the generate functions.
+- System prompts: instruct model to respond in English, use only information present in the comments, avoid speculation.
+- User prompt helpers: `summaryUser(input)` and `keyPointsUser(input)` — task-specific, focused.
+
+#### `generateSummary()` (~line 1118)
+- Rewritten: LanguageModel-first with `session.destroy()` in a `finally` block.
+- Session created with `outputLanguage: "en"`, `temperature: 0.4`, `topK: 20`.
+- Falls through to Summarizer if LanguageModel unavailable or throws.
+- Error caught per-path with targeted console messages.
+
+#### `generateKeyPoints()` (~line 1158)
+- Added LanguageModel path (was Summarizer-only before).
+- Same pattern: `outputLanguage: "en"`, `temperature: 0.3`, `topK: 15`, `session.destroy()` in `finally`.
+- Summarizer fallback preserved unchanged.
+
+#### `insertSummaryBox()` (~line 930)
+- Added null guard: if no `fieldset` child is found, falls back to `prepend()` instead of crashing.
+
+### Architectural Notes
+- **`outputLanguage: "en"`** is a valid `LanguageModel.create()` option in the Chrome Prompt API (not Edge). Suppresses the browser warning about unspecified output language.
+- **Phi-4-mini** (the underlying model, 3.8B, 128K context) has a known hallucination tendency — system prompts now explicitly ground it to the input content.
+- **`temperature` + `topK`** tuning: lower values (0.3–0.4 / 15–20) produce more deterministic, less hallucinatory summarization output.
+- **`session.destroy()`** must be called after each prompt to release the model from memory; previously missing entirely.
+- `prepareCommentsForSummarizer()` is unchanged — acts as the generic "comments array → AI input string" formatter.
+
+### Files Modified
+- `chrome-extension/in-page.js` — all changes in this file only.
