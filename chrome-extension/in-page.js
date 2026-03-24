@@ -973,9 +973,8 @@ function insertSummaryBox(targetFieldset) {
 		display: grid;
 		border: 4px solid #0000;
 		border-radius: 50%;
-		border-right-color: #020089;
+		border-right-color: #273167;
 		animation: l15 1s infinite linear;
-		margin-left: 20%;
 		}
 		.loader::before,
 		.loader::after {
@@ -994,17 +993,25 @@ function insertSummaryBox(targetFieldset) {
 		100%{transform: rotate(1turn)}
 		}
 
-		#ai-summary-box {
+		.loader-container {
 		display: flex;
 		align-items: center;
+		gap: 20px;
+		padding: 10px 0;
 		}
-	
+
+		#ai-summary-box {
+		display: block;
+		}
+
 		.loader-text {
 		font-family: Tahoma, Arial;
-		font-size: 1.2em;
-		color: #333333;
-		text-align: center;
-		margin-top: 10%;
+		font-size: 1em;
+		color: #555555;
+		margin: 0;
+		width: 320px;
+		line-height: 1.4;
+		transition: opacity 0.35s ease;
 		}
     </style>
 
@@ -1014,7 +1021,7 @@ function insertSummaryBox(targetFieldset) {
             <div id="ai-summary-box">
                 <div class="loader-container">
                     <div class="loader"></div>
-                    <div class="loader-text">Loading summary…</div>
+                    <div class="loader-text"></div>
                 </div>
             </div>
 			<div id="ai-key-points-label" style="font-weight:bold; margin-top:8px; display:none;">Key Points</div>
@@ -1030,8 +1037,44 @@ function insertSummaryBox(targetFieldset) {
 		fieldset.insertAdjacentElement("beforebegin", wrapper);
 	}
 
+	const summaryBox = wrapper.querySelector("#ai-summary-box");
+	const loaderText = wrapper.querySelector(".loader-text");
+
+	const loaderPhrases = [
+		"Reading between the lines…",
+		"Consulting the ticket oracle…",
+		"Distilling chaos into clarity…",
+		"Interrogating the comments…",
+		"Translating support-speak…",
+		"Connecting the dots…",
+		"Sifting through the noise…",
+		"Extracting signal from static…",
+		"Cross-referencing the timeline…",
+		"Assembling the narrative…",
+		"Making sense of it all…",
+		"Wrangling scattered thoughts…",
+		"Decoding the paper trail…",
+		"Asking the AI nicely…",
+		"Summarising at the speed of thought…",
+		"Processing… please hold…",
+	];
+
+	let phraseIndex = Math.floor(Math.random() * loaderPhrases.length);
+	loaderText.textContent = loaderPhrases[phraseIndex];
+
+	const loaderInterval = setInterval(() => {
+		loaderText.style.opacity = "0";
+		setTimeout(() => {
+			phraseIndex = (phraseIndex + 1) % loaderPhrases.length;
+			loaderText.textContent = loaderPhrases[phraseIndex];
+			loaderText.style.opacity = "1";
+		}, 350);
+	}, 2800);
+
+	summaryBox.__loaderInterval = loaderInterval;
+
 	return {
-		summaryBox: wrapper.querySelector("#ai-summary-box"),
+		summaryBox,
 		keyPoints: wrapper.querySelector("#ai-key-points")
 	}
 }
@@ -1065,6 +1108,8 @@ async function initUI() {
 
 	const dialog = await waitForElement(".ui-dialog");
 	const ensureExtractButton = () => {
+		if (!getTicketDocument(dialog)) return;
+
 		const buttonBar = dialog.querySelector(".ui-dialog-buttonset");
 		if (!buttonBar || buttonBar.querySelector("#extract-btn")) return;
 
@@ -1217,6 +1262,10 @@ async function generateSummary(input, summaryBox, keyPointsBox = null) {
 		const stream = await summarizer.summarizeStreaming(input);
 		await typewriterUpdate(stream, summaryBox);
 	} catch (err) {
+		if (summaryBox.__loaderInterval) {
+			clearInterval(summaryBox.__loaderInterval);
+			delete summaryBox.__loaderInterval;
+		}
 		summaryBox.textContent = "Failed to generate summary.";
 		console.error("generateSummary failed:", err);
 		return;
@@ -1334,6 +1383,11 @@ async function watchCommentEditor(templates) {
 }
 
 async function typewriterUpdate(stream, element) {
+	if (element.__loaderInterval) {
+		clearInterval(element.__loaderInterval);
+		delete element.__loaderInterval;
+	}
+
 	let displayed = "";
 	let pending = "";
 	let rafId = null;
