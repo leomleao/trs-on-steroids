@@ -294,7 +294,7 @@ function renderTicketNotifications(ticketDoc, warnings) {
 		notificationPanel.style.borderLeft = "6px solid #d97706";
 		notificationPanel.style.borderRadius = "6px";
 		notificationPanel.style.padding = "14px 18px";
-		notificationPanel.style.margin = "0 0 18px 0";
+		notificationPanel.style.margin = "0px 18px 18px 0px";
 		notificationPanel.style.color = "#7c2d12";
 		titlePanel.insertAdjacentElement("beforebegin", notificationPanel);
 	}
