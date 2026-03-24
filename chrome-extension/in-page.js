@@ -68,6 +68,7 @@ function createEmptyTicketData() {
 		status: "",
 		title: "",
 		priority: "",
+		entryType: "",
 		owner: "",
 		assignedTo: "",
 		loggedBy: "",
@@ -196,21 +197,61 @@ function getDaysInPast(value) {
 	return Math.floor(differenceMs / 86400000);
 }
 
+function normalizeText(value) {
+	return (value || "").trim().toLowerCase();
+}
+
+function isPlaceholderAssignment(value) {
+	const normalizedValue = normalizeText(value);
+	return !normalizedValue || normalizedValue === "-- select --" || normalizedValue === "select" || normalizedValue === "unassigned";
+}
+
 function buildTicketWarnings(ticketData, lastCustomerFacingCommentDate) {
 	const warnings = [];
+	const normalizedStatus = normalizeText(ticketData.status);
+	const normalizedPriority = normalizeText(ticketData.priority);
+	const normalizedEntryType = normalizeText(ticketData.entryType);
+	const hidesDeliveryDateWarningStatuses = new Set([
+		"customer uat",
+		"provided to customer",
+		"accepted"
+	]);
+	const isClosedTicket = normalizedStatus === "close" || normalizedStatus === "closed";
+
+	if (isClosedTicket) {
+		if (ticketData.totalTimeCON > ticketData.totalTicketTime) {
+			warnings.push("Time spent is greater than the total ticket time.");
+		}
+
+		return warnings;
+	}
+
+	if (!ticketData.nextContactDate) {
+		warnings.push("The next contact date is missing.");
+	}
 
 	const nextContactDaysPast = getDaysInPast(ticketData.nextContactDate);
 	if (nextContactDaysPast > 0) {
 		warnings.push(`The next contact date is ${nextContactDaysPast} day${nextContactDaysPast === 1 ? "" : "s"} in the past.`);
 	}
 
+	if (normalizedEntryType === "change request" && !ticketData.deliveryDate) {
+		warnings.push("The delivery date is missing for this Change Request.");
+	}
+
 	const deliveryDaysPast = getDaysInPast(ticketData.deliveryDate);
-	if (deliveryDaysPast > 0) {
+	if (deliveryDaysPast > 0 && !hidesDeliveryDateWarningStatuses.has(normalizedStatus)) {
 		warnings.push(`The delivery date is ${deliveryDaysPast} day${deliveryDaysPast === 1 ? "" : "s"} in the past.`);
 	}
 
 	const lastCommentDaysPast = getDaysInPast(lastCustomerFacingCommentDate);
-	if (lastCommentDaysPast > 7) {
+	if (isPlaceholderAssignment(ticketData.assignedTo)) {
+		warnings.push("This ticket is unassigned.");
+	}
+
+	if (normalizedPriority && normalizedPriority !== "p4" && lastCommentDaysPast > 3) {
+		warnings.push(`This ${ticketData.priority} ticket has no customer-facing update for ${lastCommentDaysPast} days.`);
+	} else if (lastCommentDaysPast > 7) {
 		warnings.push(`The last customer-facing comment is ${lastCommentDaysPast} days old.`);
 	}
 
@@ -256,7 +297,7 @@ function renderTicketNotifications(ticketDoc, warnings) {
 	const warningMarkup = warnings.map(message => `<li>${message}</li>`).join("");
 	notificationPanel.style.display = "";
 	notificationPanel.innerHTML = `
-		<div style="font-size: 16px; font-weight: 700; margin-bottom: 10px;">Notifications</div>
+		<div style="font-size: 16px; font-weight: 700; margin-bottom: 10px;">Warning</div>
 		<ul style="margin: 0 0 0 18px; padding: 0; font-size: 14px; line-height: 1.5;">
 			${warningMarkup}
 		</ul>
@@ -1151,6 +1192,7 @@ async function refreshTicketData(dialog) {
 	nextTicketData.status = getSelectedText(ticketDoc, "#ddl_status");
 	nextTicketData.title = getInputValue(ticketDoc, "#txt_ed_title");
 	nextTicketData.priority = getSelectedText(ticketDoc, "#ddl_ed_priority");
+	nextTicketData.entryType = getTextContent(ticketDoc, "#lbl_entry_type");
 	nextTicketData.owner = getSelectedText(ticketDoc, "#ddl_owner");
 	nextTicketData.assignedTo = getSelectedText(ticketDoc, "#ddl_assigned_to");
 	nextTicketData.loggedBy = getTextContent(ticketDoc, "#lbl_ed_logged_by2");
