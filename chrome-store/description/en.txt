@@ -1,5 +1,26 @@
+TRS on Steroids improves day-to-day ticket handling inside the The Config Team support portal.
 
-Personal information is not collected / used.
-Source code is released to GitHub (see "Website" link).
+It is designed to reduce repetitive work while keeping ticket updates more consistent and visible during normal support workflows.
 
-This extension was developed by Leo, your colleague from TCT UK :D
+Current features include:
+- extracting live ticket context from the portal
+- quick comment template application from a dropdown
+- inline ticket warnings for missing or risky conditions
+- visibility of time usage against quoted effort
+- optional browser-AI helpers for summaries and key points when supported by the browser
+
+The extension currently focuses more on workflow improvements than on AI. AI features are optional helpers, not the core product.
+
+Examples of inline warnings include:
+- missing next contact date
+- missing delivery date for Change Requests
+- overdue next contact or delivery dates
+- unassigned tickets
+- stale customer-facing communication
+- low or exceeded quoted time
+
+Privacy:
+- Personal information is not collected or sold by the extension.
+- No external service is required for the core workflow.
+
+Source code is available through the project website / repository link.

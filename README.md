@@ -1,64 +1,120 @@
-( **English** )
+# TRS on Steroids
 
-# TRS on Steroids – AI-Enhanced Ticket Response Automation
+TRS on Steroids is a Chrome/Edge extension for improving day-to-day ticket handling inside `https://portal.theconfigteam.co.uk/*`.
 
-**TRS on Steroids** is a powerful browser extension built to automate and accelerate ticket response workflows within the **SAP AMS support portal at The Config Team**. By combining real-time data extraction with AI-driven content generation, the extension creates accurate, consistent, and professional internal comments—minimizing manual effort and boosting productivity.
+The project is currently focused much more on portal workflow improvements than on AI. The main value today is better ticket context extraction, faster comment-template application, and inline warnings that highlight risky or incomplete tickets while you are working.
 
-The extension continuously monitors ticket pages, capturing key information such as requester details, contact timelines, recent communications, and support effort metrics. This data is used to dynamically populate intelligent response templates that adapt to each ticket's unique context. With support for multi-stage follow-ups, escalations, and closure procedures, TRS on Steroids ensures communication stays compliant with business policies while drastically reducing repetitive work.
+## Current State
 
-The result? A streamlined, one-click response workflow that keeps support interactions fast, consistent, and error-free.
+The extension currently does the following:
 
----
+- injects directly into the portal via a Manifest V3 content script
+- reads ticket data from the real ticket iframe instead of relying on broad page scraping
+- keeps a shared `ticketData` object across frame contexts
+- adds a template dropdown to the comment editor
+- supports quick application of the current follow-up / closure templates
+- adds a warning panel above the ticket title
+- includes a `Fill time` action in the comment workflow
 
-## Key Features
+## Ticket Data Available
 
-- **AI-powered, context-aware template generation** for customer-facing and internal responses.  
-- **Automatic extraction of essential ticket details** such as requester information, contact dates, latest comments, and time-tracking metrics.  
-- **Customizable multi-stage response templates** for follow-up, warnings, escalations, and closure communications.  
-- **Real-time monitoring and synchronization** with ticket fields and comment editors using advanced DOM observation.  
-- **Secure operation restricted to the SAP AMS support portal environment.**  
-- **In-app access to ready-to-use templates** without navigating away from the ticket interface.  
-- **Automated enforcement of business rules**, including the “three-strike” closure policy.
+The extension currently captures ticket information such as:
 
----
+- requester / person name
+- last customer-facing comment
+- last and previous customer-facing comment dates
+- next contact date
+- consultant and customer time totals
+- quoted ticket time
+- status
+- title
+- priority
+- entry type
+- owner
+- assigned to
+- logged by
+- logged date
+- external ID
+- delivery date
+- details
 
-## How It Works
+This data is used mainly for template filling and ticket warnings.
 
-1. **Install the extension** and grant access to the designated SAP AMS support portal URLs.  
-2. **Open a ticket page**—the extension automatically begins monitoring relevant fields and content.  
-3. When writing a response, the extension **extracts up-to-date ticket information**, including requester name, latest customer comments, and effort tracking data.  
-4. It then provides **context-aware, AI-enhanced templates** pre-filled with extracted details.  
-5. **Select the appropriate template** for the communication stage (e.g., follow-up, warning, closure).  
-6. **Adjust the generated text** if needed, then send your customer reply or internal note.  
-7. The extension continues to **update template content dynamically** as the ticket evolves.
+## Current Warning Rules
 
----
+The inline warning area can currently flag:
 
-## Optional: Enable PromptAI for Enhanced Functionality
+- missing next contact date
+- next contact date in the past
+- missing delivery date for Change Requests
+- delivery date in the past
+- unassigned tickets
+- stale customer-facing updates
+- higher-priority stale tickets with a shorter threshold
+- no time left on the ticket
+- very low remaining quoted time
+- consultant time exceeding total quoted time
 
-To unlock more advanced AI capabilities, you can **manually enable PromptAI in your browser**.  
-Once activated, TRS on Steroids gains access to more powerful generation features, enabling richer template creation, deeper contextual understanding, and improved response accuracy.
+There are also status-specific exceptions:
 
-[Link - Enable Prompt API](https://learn.microsoft.com/en-us/microsoft-edge/web-platform/prompt-api#enable-the-prompt-api)
+- delivery-date-past warnings are suppressed for `Customer UAT`, `Provided to Customer`, and `Accepted`
+- closed tickets only show the over-consumed-time warning
 
-> ⚠️ This mode is optional and disabled by default.  
-> Enabling PromptAI may give the extension access to additional AI-powered browser APIs depending on your browser configuration.
+## Templates
 
----
+Templates are currently stored in [chrome-extension/templates.json](/c:/Dev/trs-on-steroids/chrome-extension/templates.json) and exposed through a dropdown in the comment editor.
 
+At the moment the built-in templates are focused on:
+
+- 3rd Strike
+- 2nd Strike
+- Closure
+
+## AI Usage
+
+AI is no longer the main focus of the repo.
+
+There is still some optional browser-AI functionality in the extension for:
+
+- generating an internal summary of ticket comments
+- generating comment key points
+- supporting the single-line summary / time workflow
+
+These features rely on browser-provided APIs such as `Summarizer` and optional Prompt API support when available. They should be treated as helper features, not the core product.
+
+## Repo Layout
+
+- [chrome-extension](/c:/Dev/trs-on-steroids/chrome-extension) - main extension source
+- [chrome-extension/in-page.js](/c:/Dev/trs-on-steroids/chrome-extension/in-page.js) - portal integration, ticket extraction, templates, warnings, and summary helpers
+- [chrome-extension/manifest.json](/c:/Dev/trs-on-steroids/chrome-extension/manifest.json) - extension manifest used for loading the real extension
+- [chrome-store/description/en.txt](/c:/Dev/trs-on-steroids/chrome-store/description/en.txt) - store description draft
+- [roadmap.md](/c:/Dev/trs-on-steroids/roadmap.md) - current project roadmap
+- [CONTEXT.md](/c:/Dev/trs-on-steroids/CONTEXT.md) - implementation handoff / deeper project notes
+
+## Loading the Extension
+
+1. Open `chrome://extensions` or `edge://extensions`
+2. Enable Developer Mode
+3. Choose `Load unpacked`
+4. Select [chrome-extension](/c:/Dev/trs-on-steroids/chrome-extension)
+
+The extension is scoped to:
+
+- `https://portal.theconfigteam.co.uk/*`
+
+## Near-Term Priorities
+
+- keep ticket refresh reliable when switching between tickets
+- validate warning rules across more ticket types and statuses
+- improve template flexibility and customization
+- keep the extension simple, stable, and useful during real ticket work
 
 ## Privacy
 
-- **No personal data is collected.**
+- no external service integration is required for the core workflow
+- the core extension behavior is local to the browser and portal page
 
-# Chrome Store
-[Link - Chrome Extensions](https://chrome.google.com/webstore)
+## Store Links
 
-# Edge Store
-[Link - Microsoft Edge Addons](https://microsoftedge.microsoft.com/addons/detail/malfemiangnnapjacgepbekjiabkkjbk)
-
-# Todo
-- [x] Stuff
-
-# Description for Chrome Store
-[./chrome-store/description/en.txt](./chrome-store/description/en.txt)
+- Chrome Web Store: https://chrome.google.com/webstore
+- Edge Add-ons: https://microsoftedge.microsoft.com/addons/detail/malfemiangnnapjacgepbekjiabkkjbk
