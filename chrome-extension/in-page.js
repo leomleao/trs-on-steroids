@@ -809,30 +809,52 @@ function addTemplateButtons(container, templates) {
 }
 
 // ------------------------------------------
-// Utility: Coversion to UL and LI tags
+// Utility: Lightweight markdown-to-HTML formatter
 // ------------------------------------------
-function convertTextToList(text) {
-	// Utility function to escape HTML special characters
-	function escapeHtml(str) {
+function formatMarkdown(text) {
+	const escaped = text
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;");
+
+	function applyInline(str) {
 		return str
-			.replace(/&/g, "&amp;")
-			.replace(/</g, "&lt;")
-			.replace(/>/g, "&gt;")
-			.replace(/"/g, "&quot;")
-			.replace(/'/g, "&#39;");
+			.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+			.replace(/\*(.+?)\*/g, '<em>$1</em>');
 	}
 
-	// Split strictly by " - " (space-hyphen-space) only, not single hyphens inside words
-	const items = text
-		.split('- ')
-		.map(item => item.trim())
-		.filter(item => item !== '');
+	const lines = escaped.split('\n');
+	let html = '';
+	let inOl = false;
+	let inUl = false;
 
-	// Wrap each item in <li> with escaped content
-	const listItems = items.map(item => `<li>${escapeHtml(item)}</li>`).join('');
+	function closeLists() {
+		if (inOl) { html += '</ol>'; inOl = false; }
+		if (inUl) { html += '</ul>'; inUl = false; }
+	}
 
-	// Wrap everything in <ul>
-	return `<br>Key Points:<br><ul>${listItems}</ul>`;
+	for (const line of lines) {
+		const olMatch = line.match(/^(\d+)\.\s+(.+)$/);
+		const ulMatch = line.match(/^[-*]\s+(.+)$/);
+
+		if (olMatch) {
+			if (inUl) { html += '</ul>'; inUl = false; }
+			if (!inOl) { html += '<ol>'; inOl = true; }
+			html += `<li>${applyInline(olMatch[2])}</li>`;
+		} else if (ulMatch) {
+			if (inOl) { html += '</ol>'; inOl = false; }
+			if (!inUl) { html += '<ul>'; inUl = true; }
+			html += `<li>${applyInline(ulMatch[1])}</li>`;
+		} else if (line.trim() !== '') {
+			closeLists();
+			html += `<p>${applyInline(line)}</p>`;
+		} else {
+			closeLists();
+		}
+	}
+
+	closeLists();
+	return html;
 }
 
 // ------------------------------------------
@@ -983,8 +1005,8 @@ function insertSummaryBox(targetFieldset) {
                     <div class="loader-text">Loading summary…</div>
                 </div>
             </div>
-			<div id="ai-key-points">                
-            </div>
+			<div id="ai-key-points-label" style="font-weight:bold; margin-top:8px; display:none;">Key Points</div>
+			<div id="ai-key-points"></div>
         </div>
     </fieldset>
 `;
@@ -1038,7 +1060,7 @@ async function initUI() {
 		newButton.id = "extract-btn";
 		newButton.type = "button";
 		newButton.className = "ui-button ui-corner-all ui-widget";
-		newButton.textContent = "Extract & Summarise Comments";
+		newButton.textContent = "AI Summary";
 		newButton.addEventListener("click", onExtractCommentsClick);
 
 		if (buttonBar.firstElementChild) {
@@ -1072,6 +1094,8 @@ async function initUI() {
 
 async function onExtractCommentsClick() {
 	console.log("Extract & Summarise comments clicked");
+	
+	findElement("#ui-id-3").click();
 
 	if (findElement("#ai-summary-box")) {
 		console.info("AI summary already present, no need to add another one.");
@@ -1140,7 +1164,7 @@ async function generateSummary(input, summaryBox) {
 			});
 			try {
 				const stream = session.promptStreaming(AI_PROMPTS.summaryUser(input));
-				await typewriterUpdate(stream, summaryBox, 5);
+				await typewriterUpdate(stream, summaryBox);
 				return;
 			} catch (err) {
 				console.warn("LanguageModel summary failed, falling back to Summarizer:", err);
@@ -1160,7 +1184,7 @@ async function generateSummary(input, summaryBox) {
 			outputLanguage: "en-GB"
 		});
 		const stream = await summarizer.summarizeStreaming(input);
-		await typewriterUpdate(stream, summaryBox, 5);
+		await typewriterUpdate(stream, summaryBox);
 	} catch (err) {
 		summaryBox.textContent = "Failed to generate summary.";
 		console.error("generateSummary fallback failed:", err);
@@ -1188,7 +1212,8 @@ async function generateKeyPoints(input, keyPointsBox) {
 			});
 			try {
 				const result = await session.prompt(AI_PROMPTS.keyPointsUser(input));
-				keyPointsBox.innerHTML = convertTextToList(result);
+				document.querySelector("#ai-key-points-label")?.style.setProperty("display", "");
+				keyPointsBox.innerHTML = formatMarkdown(result);
 				return;
 			} catch (err) {
 				console.warn("LanguageModel key points failed, falling back to Summarizer:", err);
@@ -1208,7 +1233,8 @@ async function generateKeyPoints(input, keyPointsBox) {
 			outputLanguage: "en-GB"
 		});
 		const keyPoints = await summarizer.summarize(input);
-		keyPointsBox.innerHTML = convertTextToList(keyPoints);
+		document.querySelector("#ai-key-points-label")?.style.setProperty("display", "");
+		keyPointsBox.innerHTML = formatMarkdown(keyPoints);
 	} catch (err) {
 		keyPointsBox.textContent = "Failed to generate key points.";
 		console.error("generateKeyPoints fallback failed:", err);
@@ -1307,17 +1333,40 @@ async function watchCommentEditor(templates) {
 	});
 }
 
-async function typewriterUpdate(stream, Element, delay = 20) {
-	let aiText = "";
+async function typewriterUpdate(stream, element) {
+	let displayed = "";
+	let pending = "";
+	let rafId = null;
+
+	function drainBuffer() {
+		rafId = null;
+		if (!pending.length) return;
+		// ~6 chars per frame at 60fps ≈ 360 chars/sec — smooth and readable
+		const batch = pending.slice(0, 6);
+		pending = pending.slice(6);
+		displayed += batch;
+		element.innerHTML = formatMarkdown(displayed);
+		if (pending.length) rafId = requestAnimationFrame(drainBuffer);
+	}
 
 	for await (const chunk of stream) {
-		// Add each character individually
-		for (const char of chunk) {
-			aiText += char;
-			Element.textContent = aiText;
-			await new Promise(resolve => setTimeout(resolve, delay));
-		}
+		pending += chunk;
+		if (rafId === null) rafId = requestAnimationFrame(drainBuffer);
 	}
+
+	// Flush any characters still in the buffer after the stream ends
+	await new Promise(resolve => {
+		function flush() {
+			if (!pending.length) { resolve(); return; }
+			const batch = pending.slice(0, 6);
+			pending = pending.slice(6);
+			displayed += batch;
+			element.innerHTML = formatMarkdown(displayed);
+			requestAnimationFrame(flush);
+		}
+		if (pending.length) requestAnimationFrame(flush);
+		else resolve();
+	});
 }
 
 }

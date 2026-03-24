@@ -4,4 +4,6 @@
 
 .secrets
 
+.claude/*
+
 .edge-debug-profile/*
