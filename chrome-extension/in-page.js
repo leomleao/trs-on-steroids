@@ -827,6 +827,7 @@ function formatMarkdown(text) {
 	let html = '';
 	let inOl = false;
 	let inUl = false;
+	let pendingBreak = false;
 
 	function closeLists() {
 		if (inOl) { html += '</ol>'; inOl = false; }
@@ -838,18 +839,23 @@ function formatMarkdown(text) {
 		const ulMatch = line.match(/^[-*]\s+(.+)$/);
 
 		if (olMatch) {
+			pendingBreak = false;
 			if (inUl) { html += '</ul>'; inUl = false; }
 			if (!inOl) { html += '<ol>'; inOl = true; }
 			html += `<li>${applyInline(olMatch[2])}</li>`;
 		} else if (ulMatch) {
+			pendingBreak = false;
 			if (inOl) { html += '</ol>'; inOl = false; }
 			if (!inUl) { html += '<ul>'; inUl = true; }
 			html += `<li>${applyInline(ulMatch[1])}</li>`;
 		} else if (line.trim() !== '') {
 			closeLists();
-			html += `<p>${applyInline(line)}</p>`;
+			if (pendingBreak) html += '<br>';
+			html += applyInline(line);
+			pendingBreak = true;
 		} else {
 			closeLists();
+			if (pendingBreak) { html += '<br><br>'; pendingBreak = false; }
 		}
 	}
 
@@ -1093,9 +1099,10 @@ async function initUI() {
 }
 
 async function onExtractCommentsClick() {
-	console.log("Extract & Summarise comments clicked");
-	
-	findElement("#ui-id-3").click();
+	console.log("AI Summary clicked");
+
+	// Switch to the Comments tab so the summary box is visible
+	document.querySelector('a.ui-tabs-anchor[href="#Comments"]')?.click();
 
 	if (findElement("#ai-summary-box")) {
 		console.info("AI summary already present, no need to add another one.");
@@ -1117,10 +1124,7 @@ async function onExtractCommentsClick() {
 	const inputForAI = prepareCommentsForSummarizer(comments);
 	const { summaryBox, keyPoints: keyPointsBox } = insertSummaryBox(commentSection);
 
-	await Promise.all([
-		generateSummary(inputForAI, summaryBox),
-		generateKeyPoints(inputForAI, keyPointsBox)
-	]);
+	await generateSummary(inputForAI, summaryBox, keyPointsBox);
 }
 
 // ---------------------------
@@ -1144,9 +1148,9 @@ Only use information explicitly present in the comments provided.`,
 };
 
 // ---------------------------
-// Generate summary
+// Generate summary (+ key-points on Summarizer fallback)
 // ---------------------------
-async function generateSummary(input, summaryBox) {
+async function generateSummary(input, summaryBox, keyPointsBox = null) {
 	const hasPromptAPI = typeof LanguageModel !== "undefined";
 
 	if (hasPromptAPI) {
@@ -1174,7 +1178,7 @@ async function generateSummary(input, summaryBox) {
 		}
 	}
 
-	// Fallback: Summarizer API
+	// Fallback: Summarizer — generate summary then key-points
 	try {
 		const summarizer = await Summarizer.create({
 			sharedContext: "A general summary of support ticket comments, emphasizing latest status, blockers, and next actions.",
@@ -1187,57 +1191,26 @@ async function generateSummary(input, summaryBox) {
 		await typewriterUpdate(stream, summaryBox);
 	} catch (err) {
 		summaryBox.textContent = "Failed to generate summary.";
-		console.error("generateSummary fallback failed:", err);
-	}
-}
-
-// ---------------------------
-// Generate key points
-// ---------------------------
-async function generateKeyPoints(input, keyPointsBox) {
-	const hasPromptAPI = typeof LanguageModel !== "undefined";
-
-	if (hasPromptAPI) {
-		const languageOptions = {
-			expectedInputs: [{ type: "text", languages: ["en"] }],
-			expectedOutputs: [{ type: "text", languages: ["en"] }]
-		};
-		const availability = await LanguageModel.availability(languageOptions);
-		if (availability === "available") {
-			const session = await LanguageModel.create({
-				...languageOptions,
-				initialPrompts: [{ role: "system", content: AI_PROMPTS.keyPointsSystem }],
-				temperature: 0.3,
-				topK: 15
-			});
-			try {
-				const result = await session.prompt(AI_PROMPTS.keyPointsUser(input));
-				document.querySelector("#ai-key-points-label")?.style.setProperty("display", "");
-				keyPointsBox.innerHTML = formatMarkdown(result);
-				return;
-			} catch (err) {
-				console.warn("LanguageModel key points failed, falling back to Summarizer:", err);
-			} finally {
-				session.destroy();
-			}
-		}
+		console.error("generateSummary failed:", err);
+		return;
 	}
 
-	// Fallback: Summarizer API
+	if (!keyPointsBox) return;
+
 	try {
-		const summarizer = await Summarizer.create({
+		const kpSummarizer = await Summarizer.create({
 			sharedContext: "A list of key milestones showing how the support ticket evolved, from latest to earliest.",
 			type: "key-points",
 			length: "medium",
 			expectedInputLanguages: ["en-GB"],
 			outputLanguage: "en-GB"
 		});
-		const keyPoints = await summarizer.summarize(input);
+		const keyPoints = await kpSummarizer.summarize(input);
 		document.querySelector("#ai-key-points-label")?.style.setProperty("display", "");
 		keyPointsBox.innerHTML = formatMarkdown(keyPoints);
 	} catch (err) {
 		keyPointsBox.textContent = "Failed to generate key points.";
-		console.error("generateKeyPoints fallback failed:", err);
+		console.error("generateKeyPoints failed:", err);
 	}
 }
 
