@@ -287,3 +287,71 @@ Refactored the Extract & Summarise Comments flow to use cached ticket data inste
 
 ### Files Modified
 - `chrome-extension/in-page.js` — all changes in this file only.
+
+---
+
+## Session 3 — Fill Time AI Upgrade + Summary Prompt Tuning
+
+### Overview
+Upgraded the "Fill time" button (`createSingleLineSummaryButton`) to use the same improved LanguageModel API patterns established in Session 2. Extracted inline AI logic into named helper functions, added a fun loading spinner to both comment and duration fields, and tuned the AI Summary prompt to produce shorter, correctly-ordered output.
+
+### Problems Addressed
+- `createSingleLineSummaryButton` used outdated LanguageModel API patterns: no language options on `availability()`/`create()`, no `session.destroy()`, no temperature tuning, sessions not closed.
+- AI logic was inlined inside the button click handler — hard to maintain.
+- No user feedback during AI generation (fields just sat empty).
+- `generateSummary` prompt asked for "2-3 paragraphs" producing 2000+ char output for 22-comment tickets.
+- `slice(-7)` was taking the 7 oldest comments (array is newest-first) — summary focused on old activity.
+- Comments tab not activated when clicking "AI Summary" (was using `document.querySelector` instead of `findElement` which recurses into iframes).
+
+### Key Changes
+
+#### New helper: `startLoadingSpinner(field, extraField = null)` (~line 662)
+- Shows braille spinner chars + rotating funny verbs (`Hallucinating...`, `Pontificating...`, etc.) in the summary field's `.value` every 80ms.
+- Verb changes every 25 frames (~2 seconds) — previously 12 frames (~1 second), too fast.
+- Optional `extraField` (duration field): also disabled and shows the spinning char in its value.
+- Returns a `stop(finalValue, extraFinalValue)` function that clears the interval, re-enables both fields, and sets their final values.
+- Duration field stays as-is (no type switching needed — it accepts text while disabled).
+
+#### New function: `generateFillTimeSummary(input)` (~line 701)
+- Extracted from the old inline click handler.
+- LanguageModel-first with `expectedInputs`/`expectedOutputs`, `temperature: 0.3`, `topK: 15`, `session.destroy()` in `finally`.
+- Summarizer fallback (`type: "tldr"`, `length: "short"`).
+- Returns a plain string.
+
+#### New function: `estimateDuration(input)` (~line 737)
+- Extracted from the old inline click handler.
+- LanguageModel-first with `temperature: 0.1`, `topK: 10` for deterministic numeric output.
+- Normalises result to 0.25-hour increments.
+- Returns a float or `null` on failure (duration field left unchanged if null).
+- No Summarizer fallback — duration estimation is not a Summarizer capability.
+
+#### New prompts in `AI_PROMPTS` (~line 1166)
+- `fillTimeSummarySystem` / `fillTimeSummaryUser`: one-sentence timesheet line, professional, no extra text.
+- `fillTimeDurationSystem` / `fillTimeDurationUser`: numeric-only response in 0.25 increments.
+
+#### `createSingleLineSummaryButton` click handler rewritten (~line 760)
+- Starts spinner on both fields.
+- Runs `generateFillTimeSummary` and `estimateDuration` in parallel via `Promise.all`.
+- Stops spinner with both results in one call.
+
+#### Console logging added to AI functions
+- `generateSummary`, `generateFillTimeSummary`, `estimateDuration` all log which path is taken:
+  - `[fnName] LanguageModel availability: <value>`
+  - `[fnName] Using LanguageModel (Prompt API)` or `LanguageModel unavailable, using Summarizer fallback`
+
+#### `AI Summary` prompt tuned (~line 1151)
+- System prompt: capped at 3–5 sentences, no longer "extremely concise 3 sentences or fewer".
+- User prompt: explicitly states input is newest-first; instructs model to start from latest activity.
+- Input slice: changed from `slice(-7)` (was taking 7 oldest) to `slice(0, 10)` (takes 10 most recent).
+
+#### `onExtractCommentsClick` tab fix (~line 1122)
+- Fixed: `document.querySelector('a.ui-tabs-anchor[href="#Comments"]')` → `findElement(...)` so the tab anchor is found inside the ticket iframe, not just the shell page.
+
+### Architectural Notes
+- Comments array from `extractComments()` is **newest-first**. Any slicing for AI input must use `slice(0, N)` not `slice(-N)`.
+- The duration field (`#txt_tr_duration`) accepts text while disabled — no type switching required.
+- `startLoadingSpinner` is a general utility; the `extraField` param makes it reusable for any secondary field.
+
+### Files Modified
+- `chrome-extension/in-page.js` — all changes in this file only.
+- `chrome-extension/manifest.json` — version bumped to `0.1.4`.

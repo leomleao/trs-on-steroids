@@ -659,6 +659,110 @@ function createTemplateDropdown(templates) {
 	return wrapper;
 }
 
+function startLoadingSpinner(field, extraField = null) {
+	const spinnerChars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+	const verbs = [
+		'Generating', 'Speculating', 'Hallucinating', 'Cogitating',
+		'Interpolating', 'Synthesizing', 'Theorizing', 'Concocting',
+		'Extrapolating', 'Fabricating', 'Contemplating', 'Pontificating'
+	];
+	let frame = 0;
+	let verbIndex = Math.floor(Math.random() * verbs.length);
+	field.disabled = true;
+
+	if (extraField) extraField.disabled = true;
+
+	const interval = setInterval(() => {
+		const char = spinnerChars[frame % spinnerChars.length];
+		field.value = `${char} ${verbs[verbIndex]}...`;
+		if (extraField) extraField.value = char;
+		frame++;
+		if (frame % 25 === 0) verbIndex = (verbIndex + 1) % verbs.length;
+	}, 80);
+
+	return (finalValue, extraFinalValue = null) => {
+		clearInterval(interval);
+		field.disabled = false;
+		field.value = finalValue ?? "";
+		if (extraField) {
+			extraField.disabled = false;
+			extraField.value = extraFinalValue ?? "";
+		}
+	};
+}
+
+async function generateFillTimeSummary(input) {
+	const languageOptions = {
+		expectedInputs: [{ type: "text", languages: ["en"] }],
+		expectedOutputs: [{ type: "text", languages: ["en"] }]
+	};
+
+	if (typeof LanguageModel !== "undefined") {
+		const availability = await LanguageModel.availability(languageOptions);
+		console.log(`[generateFillTimeSummary] LanguageModel availability: ${availability}`);
+		if (availability === "available") {
+			console.log("[generateFillTimeSummary] Using LanguageModel (Prompt API)");
+			const session = await LanguageModel.create({
+				...languageOptions,
+				initialPrompts: [{ role: "system", content: AI_PROMPTS.fillTimeSummarySystem }],
+				temperature: 0.3,
+				topK: 15
+			});
+			try {
+				return await session.prompt(AI_PROMPTS.fillTimeSummaryUser(input));
+			} catch (err) {
+				console.warn("LanguageModel fill-time summary failed:", err);
+			} finally {
+				session.destroy();
+			}
+		}
+	}
+
+	// Summarizer fallback
+	console.log("[generateFillTimeSummary] LanguageModel unavailable, using Summarizer fallback");
+	const summarizer = await Summarizer.create({
+		sharedContext: "Summarize work done into a single timesheet line.",
+		type: "tldr",
+		length: "short",
+		expectedInputLanguages: ["en-GB"],
+		outputLanguage: "en-GB"
+	});
+	return await summarizer.summarize(input);
+}
+
+async function estimateDuration(input) {
+	const languageOptions = {
+		expectedInputs: [{ type: "text", languages: ["en"] }],
+		expectedOutputs: [{ type: "text", languages: ["en"] }]
+	};
+
+	if (typeof LanguageModel !== "undefined") {
+		const availability = await LanguageModel.availability(languageOptions);
+		console.log(`[estimateDuration] LanguageModel availability: ${availability}`);
+		if (availability === "available") {
+			console.log("[estimateDuration] Using LanguageModel (Prompt API)");
+			const session = await LanguageModel.create({
+				...languageOptions,
+				initialPrompts: [{ role: "system", content: AI_PROMPTS.fillTimeDurationSystem }],
+				temperature: 0.1,
+				topK: 10
+			});
+			try {
+				const raw = await session.prompt(AI_PROMPTS.fillTimeDurationUser(input));
+				let duration = parseFloat(raw);
+				if (isNaN(duration) || duration <= 0) duration = 1;
+				return Math.round(duration * 4) / 4;
+			} catch (err) {
+				console.warn("LanguageModel duration estimate failed:", err);
+			} finally {
+				session.destroy();
+			}
+		}
+	}
+
+	return null; // No fallback for duration — field left unchanged
+}
+
 function createSingleLineSummaryButton(label, id) {
 	const button = document.createElement("button");
 	button.id = id;
@@ -668,126 +772,28 @@ function createSingleLineSummaryButton(label, id) {
 
 	button.addEventListener("click", async () => {
 		const iframe = findElement("#txt_ed_comment_ifr");
-		if (!iframe) return null;
-
+		if (!iframe) return;
 		const doc = iframe.contentDocument || iframe.contentWindow.document;
-		if (!doc) return null;
+		const tiny = doc?.querySelector("#tinymce");
+		if (!tiny) { alert("TinyMCE not found."); return; }
 
-		const tiny = doc.querySelector("#tinymce");
-		if (!tiny) {
-			alert("TinyMCE not found.");
-			return;
-		}
-
-		const currentComment = tiny.innerHTML;
-
-		// -------------------------
-		// 1. Generate single-line summary
-		// -------------------------
 		const summaryField = findElement("#txt_tr_comments");
+		const durationField = findElement("#txt_tr_duration");
 		if (!summaryField) return;
 
+		const commentContent = tiny.innerHTML;
+		const stopSpinner = startLoadingSpinner(summaryField, durationField);
+
 		try {
-			let singleLineSummary = "";
-			const hasPromptAPI = typeof LanguageModel !== "undefined";
+			const [summary, duration] = await Promise.all([
+				generateFillTimeSummary(commentContent),
+				durationField ? estimateDuration(commentContent) : Promise.resolve(null)
+			]);
 
-			if (hasPromptAPI) {
-				const availability = await LanguageModel.availability();
-				if (availability === "available") {
-					const session = await LanguageModel.create({
-						initialPrompts: [
-							{
-								role: "system",
-								content: `
-								You are an assistant that summarizes user comments for display in a web interface.
-								Output exactly one concise sentence in text. You're infering what was done based on the comment.
-								Do not add extra text, explanations, or numbering.
-								Focus on the main point or action implied by the comments.
-								Keep it clear, professional, and self-contained.
-								`.trim()
-							}
-						]
-					});
-
-					const prompt = [
-						{
-							role: "user",
-							content: `
-							Summarize the work carried out based on the comment. 
-							It will justify the time spent on this piece of work in the timesheet.					
-							Comment:
-							${currentComment}
-									`.trim()
-						}
-					];
-
-					singleLineSummary = await session.prompt(prompt);
-				}
-			}
-
-			// Fallback if PromptAI is not available
-			if (!singleLineSummary) {
-				console.log("Single line summary falls back to summarizer");
-
-				const summarizer = await Summarizer.create({
-					sharedContext: "Summarize comments into a single sentence.",
-					type: "tldr",
-					length: "short",
-					expectedInputLanguages: ["en-GB"],
-					outputLanguage: "en-GB"
-				});
-				singleLineSummary = await summarizer.summarize(currentComment);
-			}
-
-			summaryField.value = singleLineSummary;
-
-
-			// -------------------------
-			// 2. Optional: Estimate duration using Prompt AI
-			// -------------------------
-			const durationField = findElement("#txt_tr_duration");
-			if (durationField && hasPromptAPI) {
-				try {
-					const session = await LanguageModel.create({
-						initialPrompts: [
-							{
-								role: "system",
-								content: `
-								You are an assistant that estimates the total effort required for a task based on user comments.
-								Output only a numeric value representing hours, using increments of 0.25 (e.g., 0.25, 0.5, 0.75, 1, 1.25).
-								Do not include any text, units, or explanations—only the number.
-								If unsure, round up to the nearest 0.25.
-								Focus on all the comments provided to determine the total time.
-								`.trim()
-							}
-						]
-					});
-
-					const prompt = [
-						{
-							role: "user",
-							content: `Estimate the total hours it would take to complete the following task based on the comments: \n\n${currentComment}`
-						}
-					];
-
-					
-					let duration = await session.prompt(prompt);
-					console.log("Estimated time from ai:" + duration)
-
-					// Normalize duration to increments of 0.25
-					duration = parseFloat(duration);
-					if (isNaN(duration) || duration <= 0) duration = 1;
-					duration = Math.round(duration * 4) / 4;
-
-					durationField.value = duration;
-				} catch (err) {
-					console.warn("Failed to estimate duration:", err);
-				}
-			}
-
+			stopSpinner(summary ?? "", duration);
 		} catch (err) {
-			alert("Failed to generate summary.");
-			console.error(err);
+			stopSpinner("", null);
+			console.error("Fill time AI failed:", err);
 		}
 	});
 
@@ -1102,7 +1108,7 @@ async function onExtractCommentsClick() {
 	console.log("AI Summary clicked");
 
 	// Switch to the Comments tab so the summary box is visible
-	document.querySelector('a.ui-tabs-anchor[href="#Comments"]')?.click();
+	findElement('a.ui-tabs-anchor[href="#Comments"]')?.click();
 
 	if (findElement("#ai-summary-box")) {
 		console.info("AI summary already present, no need to add another one.");
@@ -1121,7 +1127,8 @@ async function onExtractCommentsClick() {
 		return;
 	}
 
-	const inputForAI = prepareCommentsForSummarizer(comments);
+	const recentComments = comments.slice(0, 10);
+	const inputForAI = prepareCommentsForSummarizer(recentComments);
 	const { summaryBox, keyPoints: keyPointsBox } = insertSummaryBox(commentSection);
 
 	await generateSummary(inputForAI, summaryBox, keyPointsBox);
@@ -1131,20 +1138,37 @@ async function onExtractCommentsClick() {
 // AI prompt definitions
 // ---------------------------
 const AI_PROMPTS = {
-	summarySystem: `You are an assistant that summarizes support ticket comments.
+	summarySystem: `You are an assistant that summarizes IT support ticket comments.
 Always respond in English.
-Only use information explicitly present in the comments provided.
-Do not add speculation or information not present in the input.`,
+Write 3 to 5 sentences. Do not write more than 5 sentences.
+Only use information explicitly present in the comments. No speculation.`,
 
 	summaryUser: (input) =>
-		`Summarize the following support ticket comments into 2-3 concise paragraphs.\nFocus on: current status, any blockers, next actions, and customer-visible context.\nOrder from most recent to earliest context.\n\n${input}`,
+		`Summarize these support ticket comments in 3-5 sentences.\nThe comments are ordered from newest to oldest — start your summary from the latest activity and work backwards.\nCover: current status, what was last done, any blockers, and next action if known.\n\n${input}`,
 
 	keyPointsSystem: `You are an assistant that extracts milestones from support ticket comments.
 Always respond in English.
 Only use information explicitly present in the comments provided.`,
 
 	keyPointsUser: (input) =>
-		`Extract the key milestones or turning points from these support ticket comments.\nReturn each point as a plain sentence on its own line, from most recent to oldest.\n\n${input}`
+		`Extract the key milestones or turning points from these support ticket comments.\nReturn each point as a plain sentence on its own line, from most recent to oldest.\n\n${input}`,
+
+	fillTimeSummarySystem: `You are an assistant that writes one-sentence summaries for IT support timesheets.
+Always respond in English.
+Output exactly one concise sentence. No bullet points, no numbering, no extra text.
+Infer what work was done from the comment. Be professional and clear.`,
+
+	fillTimeSummaryUser: (input) =>
+		`Write a single timesheet line summarizing the work done based on this comment:\n\n${input}`,
+
+	fillTimeDurationSystem: `You are an assistant that estimates IT support task durations.
+Always respond with only a number.
+Output a single decimal number in hours using 0.25 increments (e.g. 0.25, 0.5, 0.75, 1, 1.25, 1.5).
+No text, no units, no explanation — only the number.
+If unsure, round up to the nearest 0.25.`,
+
+	fillTimeDurationUser: (input) =>
+		`Estimate the hours required to complete this IT support task based on the comment:\n\n${input}`
 };
 
 // ---------------------------
@@ -1159,7 +1183,9 @@ async function generateSummary(input, summaryBox, keyPointsBox = null) {
 			expectedOutputs: [{ type: "text", languages: ["en"] }]
 		};
 		const availability = await LanguageModel.availability(languageOptions);
+		console.log(`[generateSummary] LanguageModel availability: ${availability}`);
 		if (availability === "available") {
+			console.log("[generateSummary] Using LanguageModel (Prompt API)");
 			const session = await LanguageModel.create({
 				...languageOptions,
 				initialPrompts: [{ role: "system", content: AI_PROMPTS.summarySystem }],
@@ -1179,6 +1205,7 @@ async function generateSummary(input, summaryBox, keyPointsBox = null) {
 	}
 
 	// Fallback: Summarizer — generate summary then key-points
+	console.log("[generateSummary] LanguageModel unavailable, using Summarizer fallback");
 	try {
 		const summarizer = await Summarizer.create({
 			sharedContext: "A general summary of support ticket comments, emphasizing latest status, blockers, and next actions.",
