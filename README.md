@@ -62,7 +62,7 @@ There are also status-specific exceptions:
 
 ## Templates
 
-Templates are currently stored in [chrome-extension/templates.json](/c:/Dev/trs-on-steroids/chrome-extension/templates.json) and exposed through a dropdown in the comment editor.
+Templates are currently stored in [chrome-extension/templates.json](/./chrome-extension/templates.json) and exposed through a dropdown in the comment editor.
 
 At the moment the built-in templates are focused on:
 
