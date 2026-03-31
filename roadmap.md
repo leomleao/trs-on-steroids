@@ -81,9 +81,9 @@ Keep TRS on Steroids useful, simple, and reliable for day-to-day ticket work ins
 - [ ] Review whether the current ticket signature is enough or whether refresh should key directly off the live ticket ID
 
 ### Template Handling
-- [ ] Allow users to customize or manage their own templates
-- [ ] Store templates in `chrome.storage.sync` so they roam across the consultant's machines (replace static `templates.json`)
-- [ ] Improve placeholder coverage using the richer `ticketData`
+- [x] Allow users to customize or manage their own templates
+- [x] Store templates in `chrome.storage.sync` so they roam across the consultant's machines (replace static `templates.json`)
+- [x] Improve placeholder coverage using the richer `ticketData`
 
 ### Time and Ticket Assistance
 - [ ] Improve time-filling suggestions using the new ticket context
@@ -198,8 +198,8 @@ The extension currently uses only a content script with no background worker or 
 | AI Extract & Summarise with LanguageModel-first path | LanguageModel, Summarizer | Medium | Done |
 | Improve stale ticket-data refresh when switching tickets | — | Medium | In progress |
 | Persist ticket context across navigations | `storage.session` | Small | Planned |
-| Allow users to customize their own templates | `storage.sync` | Medium | Planned |
-| Roaming template and settings storage | `storage.sync` | Small | Planned |
+| Allow users to customize their own templates | `storage.sync` | Medium | Done |
+| Roaming template and settings storage | `storage.sync` | Small | Done |
 | Keyboard shortcuts for Fill Time, templates, side panel | `commands` | Small | Planned |
 | Right-click "Fill time from selection" | `contextMenus` | Small | Planned |
 | Side panel: ticket dashboard + AI output | `sidePanel`, `storage` | Large | Planned |

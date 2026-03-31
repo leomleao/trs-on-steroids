@@ -4,6 +4,7 @@
   "manifest_version": 3,
   "default_locale": "en",
   "description": "TRS requires resources to implement new features, this gives it steroids.",
+  "permissions": ["storage"],
   "icons": {
     "16": "icon/icon-16x16.png",
     "32": "icon/icon-32x32.png",

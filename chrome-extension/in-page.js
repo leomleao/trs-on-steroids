@@ -7,6 +7,16 @@ if (window.__trsOnSteroidsInitialized) {
 	const sharedWindow = getSharedWindow();
 	sharedWindow.ticketData = sharedWindow.ticketData || createEmptyTicketData();
 
+	const DEFAULT_TEMPLATE_LABELS = {
+		template1: "3rd Strike",
+		template2: "2nd Strike",
+		template3: "Closure"
+	};
+	const TEMPLATE_STORAGE_KEY = "userTemplates";
+	const TEMPLATE_PLACEHOLDER_KEYS = Object.freeze(Object.keys(createEmptyTicketData()));
+	const TEMPLATE_EXPRESSION_KEYS = Object.freeze(["todayPlusDays(3)"]);
+	const TEMPLATE_MANAGER_OVERLAY_ID = "trs-template-manager-overlay";
+
 
 // ------------------------------------------
 // Utility: wait for an element to appear
@@ -78,6 +88,548 @@ function createEmptyTicketData() {
 		details: "",
 		comments: []
 	};
+}
+
+function createEmptyTemplateStore() {
+	return {
+		defaultTemplates: [],
+		userTemplates: [],
+		listeners: new Set(),
+		initPromise: null,
+		storageListenerBound: false
+	};
+}
+
+function getTemplateStore() {
+	const shared = getSharedWindow();
+	shared.templateStore = shared.templateStore || createEmptyTemplateStore();
+	return shared.templateStore;
+}
+
+function buildTemplateMarkup(template, source = "user") {
+	if (!template) return null;
+
+	if (typeof template === "string") {
+		return {
+			id: "",
+			label: "",
+			content: template,
+			source
+		};
+	}
+
+	if (typeof template !== "object") return null;
+
+	return {
+		id: String(template.id || ""),
+		label: String(template.label || "").trim(),
+		content: String(template.content || ""),
+		source: template.source || source
+	};
+}
+
+function normalizeTemplateEntry(entry, fallbackId, source = "user") {
+	const normalized = buildTemplateMarkup(entry, source);
+	if (!normalized) return null;
+
+	normalized.id = normalized.id || fallbackId || "";
+	normalized.label = normalized.label || DEFAULT_TEMPLATE_LABELS[normalized.id] || normalized.id || "Untitled Template";
+	normalized.content = normalized.content.trim();
+	normalized.source = source;
+
+	return normalized.id && normalized.content ? normalized : null;
+}
+
+function normalizeStoredTemplates(entries) {
+	if (!Array.isArray(entries)) return [];
+
+	return entries
+		.map((entry, index) => normalizeTemplateEntry(entry, `user-template-${index + 1}`, "user"))
+		.filter(Boolean);
+}
+
+function getAllTemplates() {
+	const templateStore = getTemplateStore();
+	return [...templateStore.defaultTemplates, ...templateStore.userTemplates];
+}
+
+function getUserTemplates() {
+	return [...getTemplateStore().userTemplates];
+}
+
+function getTemplateById(templateId) {
+	return getAllTemplates().find(template => template.id === templateId) || null;
+}
+
+function notifyTemplateSubscribers() {
+	for (const listener of getTemplateStore().listeners) {
+		try {
+			listener(getAllTemplates());
+		} catch (error) {
+			console.error("Template subscriber failed", error);
+		}
+	}
+}
+
+function subscribeToTemplates(listener) {
+	const templateStore = getTemplateStore();
+	templateStore.listeners.add(listener);
+	return () => templateStore.listeners.delete(listener);
+}
+
+function syncGet(keys) {
+	return new Promise((resolve, reject) => {
+		if (!chrome?.storage?.sync) {
+			resolve({});
+			return;
+		}
+
+		chrome.storage.sync.get(keys, items => {
+			if (chrome.runtime?.lastError) {
+				reject(new Error(chrome.runtime.lastError.message));
+				return;
+			}
+
+			resolve(items || {});
+		});
+	});
+}
+
+function syncSet(items) {
+	return new Promise((resolve, reject) => {
+		if (!chrome?.storage?.sync) {
+			resolve();
+			return;
+		}
+
+		chrome.storage.sync.set(items, () => {
+			if (chrome.runtime?.lastError) {
+				reject(new Error(chrome.runtime.lastError.message));
+				return;
+			}
+
+			resolve();
+		});
+	});
+}
+
+async function loadDefaultTemplates() {
+	const url = chrome.runtime.getURL("templates.json");
+	const response = await fetch(url);
+	if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+	const rawTemplates = await response.json();
+
+	return Object.entries(rawTemplates)
+		.map(([templateId, templateContent]) => normalizeTemplateEntry(templateContent, templateId, "default"))
+		.filter(Boolean);
+}
+
+function bindTemplateStorageListener() {
+	const templateStore = getTemplateStore();
+	if (templateStore.storageListenerBound || !chrome?.storage?.onChanged) return;
+
+	chrome.storage.onChanged.addListener((changes, areaName) => {
+		if (areaName !== "sync" || !changes[TEMPLATE_STORAGE_KEY]) return;
+
+		templateStore.userTemplates = normalizeStoredTemplates(changes[TEMPLATE_STORAGE_KEY].newValue);
+		notifyTemplateSubscribers();
+	});
+
+	templateStore.storageListenerBound = true;
+}
+
+async function initializeTemplates() {
+	const templateStore = getTemplateStore();
+	if (templateStore.initPromise) return templateStore.initPromise;
+
+	templateStore.initPromise = (async () => {
+		const [defaultTemplates, storedItems] = await Promise.all([
+			loadDefaultTemplates(),
+			syncGet([TEMPLATE_STORAGE_KEY])
+		]);
+
+		templateStore.defaultTemplates = defaultTemplates;
+		templateStore.userTemplates = normalizeStoredTemplates(storedItems[TEMPLATE_STORAGE_KEY]);
+		bindTemplateStorageListener();
+		notifyTemplateSubscribers();
+		return getAllTemplates();
+	})();
+
+	try {
+		return await templateStore.initPromise;
+	} catch (error) {
+		templateStore.initPromise = null;
+		throw error;
+	}
+}
+
+function slugifyTemplateLabel(label) {
+	return String(label || "")
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, "-")
+		.replace(/^-+|-+$/g, "")
+		.slice(0, 40);
+}
+
+function createUserTemplateId(label) {
+	const slug = slugifyTemplateLabel(label) || "template";
+	return `user-${slug}-${Date.now()}`;
+}
+
+async function saveUserTemplates(nextTemplates) {
+	const normalizedTemplates = normalizeStoredTemplates(nextTemplates);
+	await syncSet({ [TEMPLATE_STORAGE_KEY]: normalizedTemplates });
+
+	const templateStore = getTemplateStore();
+	templateStore.userTemplates = normalizedTemplates;
+	notifyTemplateSubscribers();
+}
+
+function insertTextAtCursor(field, text) {
+	const start = field.selectionStart ?? field.value.length;
+	const end = field.selectionEnd ?? field.value.length;
+	const value = field.value;
+
+	field.value = `${value.slice(0, start)}${text}${value.slice(end)}`;
+	field.focus();
+	field.setSelectionRange(start + text.length, start + text.length);
+}
+
+function createTemplatePlaceholderButton(token, textarea) {
+	const button = document.createElement("button");
+	button.type = "button";
+	button.className = "ui-button ui-corner-all ui-widget";
+	button.style.fontSize = "12px";
+	button.style.padding = ".2em .55em";
+	button.style.margin = "0";
+	button.textContent = `{{ ${token} }}`;
+
+	const previewValue = getTicketData()?.[token];
+	if (previewValue !== undefined) {
+		button.title = previewValue ? String(previewValue) : "No current value on this ticket";
+	}
+
+	button.addEventListener("click", () => {
+		insertTextAtCursor(textarea, `{{ ${token} }}`);
+	});
+
+	return button;
+}
+
+function closeTemplateManager() {
+	const overlay = document.getElementById(TEMPLATE_MANAGER_OVERLAY_ID);
+	if (!overlay) return;
+
+	overlay.__unsubscribeTemplates?.();
+	overlay.remove();
+}
+
+function openTemplateManager() {
+	const existingOverlay = document.getElementById(TEMPLATE_MANAGER_OVERLAY_ID);
+	if (existingOverlay) {
+		existingOverlay.style.display = "flex";
+		return;
+	}
+
+	const overlay = document.createElement("div");
+	overlay.id = TEMPLATE_MANAGER_OVERLAY_ID;
+	overlay.style.position = "fixed";
+	overlay.style.inset = "0";
+	overlay.style.background = "rgba(15, 23, 42, 0.45)";
+	overlay.style.display = "flex";
+	overlay.style.alignItems = "center";
+	overlay.style.justifyContent = "center";
+	overlay.style.zIndex = "2147483647";
+
+	const modal = document.createElement("div");
+	modal.style.width = "min(920px, 94vw)";
+	modal.style.maxHeight = "88vh";
+	modal.style.overflow = "auto";
+	modal.style.background = "#ffffff";
+	modal.style.border = "1px solid #cbd5e1";
+	modal.style.borderRadius = "12px";
+	modal.style.boxShadow = "0 18px 60px rgba(15, 23, 42, 0.3)";
+	modal.style.padding = "20px";
+	modal.style.fontFamily = "Segoe UI, sans-serif";
+	modal.addEventListener("click", event => event.stopPropagation());
+
+	const title = document.createElement("h2");
+	title.textContent = "Manage Templates";
+	title.style.margin = "0 0 8px";
+	title.style.fontSize = "20px";
+
+	const subtitle = document.createElement("p");
+	subtitle.textContent = "Custom templates are saved to browser sync storage and appear immediately in the template picker.";
+	subtitle.style.margin = "0 0 16px";
+	subtitle.style.color = "#475569";
+
+	const layout = document.createElement("div");
+	layout.style.display = "grid";
+	layout.style.gridTemplateColumns = "minmax(220px, 260px) minmax(0, 1fr)";
+	layout.style.gap = "18px";
+
+	const listPanel = document.createElement("div");
+	const listLabel = document.createElement("label");
+	listLabel.textContent = "Your Templates";
+	listLabel.style.display = "block";
+	listLabel.style.fontWeight = "600";
+	listLabel.style.marginBottom = "8px";
+
+	const templateList = document.createElement("select");
+	templateList.size = 10;
+	templateList.style.width = "100%";
+	templateList.style.minHeight = "260px";
+	templateList.style.padding = "8px";
+	templateList.className = "ui-widget ui-widget-content ui-corner-all";
+
+	const listHint = document.createElement("p");
+	listHint.textContent = "Built-in templates stay available in the dropdown; this editor manages your custom ones.";
+	listHint.style.fontSize = "12px";
+	listHint.style.color = "#64748b";
+	listHint.style.margin = "8px 0 0";
+
+	listPanel.appendChild(listLabel);
+	listPanel.appendChild(templateList);
+	listPanel.appendChild(listHint);
+
+	const editorPanel = document.createElement("div");
+
+	const nameLabel = document.createElement("label");
+	nameLabel.textContent = "Template Name";
+	nameLabel.style.display = "block";
+	nameLabel.style.fontWeight = "600";
+	nameLabel.style.marginBottom = "6px";
+
+	const nameInput = document.createElement("input");
+	nameInput.type = "text";
+	nameInput.placeholder = "Example: Awaiting Customer Update";
+	nameInput.style.width = "100%";
+	nameInput.style.boxSizing = "border-box";
+	nameInput.style.marginBottom = "12px";
+	nameInput.style.padding = "10px 12px";
+
+	const contentLabel = document.createElement("label");
+	contentLabel.textContent = "Template HTML";
+	contentLabel.style.display = "block";
+	contentLabel.style.fontWeight = "600";
+	contentLabel.style.marginBottom = "6px";
+
+	const contentInput = document.createElement("textarea");
+	contentInput.placeholder = "<p>Hello {{ personName }},</p>";
+	contentInput.style.width = "100%";
+	contentInput.style.minHeight = "240px";
+	contentInput.style.boxSizing = "border-box";
+	contentInput.style.padding = "12px";
+	contentInput.style.resize = "vertical";
+	contentInput.style.marginBottom = "12px";
+
+	const placeholderLabel = document.createElement("div");
+	placeholderLabel.textContent = "Insert placeholders from ticketData";
+	placeholderLabel.style.fontWeight = "600";
+	placeholderLabel.style.marginBottom = "8px";
+
+	const placeholderGrid = document.createElement("div");
+	placeholderGrid.style.display = "flex";
+	placeholderGrid.style.flexWrap = "wrap";
+	placeholderGrid.style.gap = "6px";
+	placeholderGrid.style.marginBottom = "12px";
+
+	for (const placeholderKey of TEMPLATE_PLACEHOLDER_KEYS) {
+		placeholderGrid.appendChild(createTemplatePlaceholderButton(placeholderKey, contentInput));
+	}
+
+	for (const expressionKey of TEMPLATE_EXPRESSION_KEYS) {
+		placeholderGrid.appendChild(createTemplatePlaceholderButton(expressionKey, contentInput));
+	}
+
+	const helperText = document.createElement("p");
+	helperText.textContent = "Any placeholder matching ticketData will be filled when the template is applied.";
+	helperText.style.fontSize = "12px";
+	helperText.style.color = "#64748b";
+	helperText.style.margin = "0 0 16px";
+
+	const actions = document.createElement("div");
+	actions.style.display = "flex";
+	actions.style.flexWrap = "wrap";
+	actions.style.gap = "8px";
+	actions.style.alignItems = "center";
+
+	const newButton = document.createElement("button");
+	newButton.type = "button";
+	newButton.className = "ui-button ui-corner-all ui-widget";
+	newButton.textContent = "New";
+
+	const saveButton = document.createElement("button");
+	saveButton.type = "button";
+	saveButton.className = "ui-button ui-corner-all ui-widget";
+	saveButton.textContent = "Save";
+
+	const deleteButton = document.createElement("button");
+	deleteButton.type = "button";
+	deleteButton.className = "ui-button ui-corner-all ui-widget";
+	deleteButton.textContent = "Delete";
+
+	const closeButton = document.createElement("button");
+	closeButton.type = "button";
+	closeButton.className = "ui-button ui-corner-all ui-widget";
+	closeButton.textContent = "Close";
+
+	const status = document.createElement("span");
+	status.style.fontSize = "12px";
+	status.style.color = "#0f766e";
+
+	actions.appendChild(newButton);
+	actions.appendChild(saveButton);
+	actions.appendChild(deleteButton);
+	actions.appendChild(closeButton);
+	actions.appendChild(status);
+
+	editorPanel.appendChild(nameLabel);
+	editorPanel.appendChild(nameInput);
+	editorPanel.appendChild(contentLabel);
+	editorPanel.appendChild(contentInput);
+	editorPanel.appendChild(placeholderLabel);
+	editorPanel.appendChild(placeholderGrid);
+	editorPanel.appendChild(helperText);
+	editorPanel.appendChild(actions);
+
+	layout.appendChild(listPanel);
+	layout.appendChild(editorPanel);
+
+	modal.appendChild(title);
+	modal.appendChild(subtitle);
+	modal.appendChild(layout);
+	overlay.appendChild(modal);
+	document.body.appendChild(overlay);
+
+	let currentTemplateId = "";
+
+	function setStatus(message, isError = false) {
+		status.textContent = message;
+		status.style.color = isError ? "#b91c1c" : "#0f766e";
+	}
+
+	function resetForm() {
+		currentTemplateId = "";
+		templateList.value = "";
+		nameInput.value = "";
+		contentInput.value = "";
+		deleteButton.disabled = true;
+	}
+
+	function loadIntoForm(templateId) {
+		const template = getUserTemplates().find(entry => entry.id === templateId);
+		if (!template) {
+			resetForm();
+			return;
+		}
+
+		currentTemplateId = template.id;
+		templateList.value = template.id;
+		nameInput.value = template.label;
+		contentInput.value = template.content;
+		deleteButton.disabled = false;
+	}
+
+	function renderTemplateList() {
+		const templates = getUserTemplates();
+		const previouslySelected = currentTemplateId;
+
+		templateList.replaceChildren();
+
+		for (const template of templates) {
+			const option = document.createElement("option");
+			option.value = template.id;
+			option.textContent = template.label;
+			templateList.appendChild(option);
+		}
+
+		if (previouslySelected && templates.some(template => template.id === previouslySelected)) {
+			loadIntoForm(previouslySelected);
+			return;
+		}
+
+		if (!templates.length) {
+			resetForm();
+		}
+	}
+
+	templateList.addEventListener("change", () => {
+		setStatus("");
+		loadIntoForm(templateList.value);
+	});
+
+	newButton.addEventListener("click", () => {
+		setStatus("");
+		resetForm();
+		nameInput.focus();
+	});
+
+	saveButton.addEventListener("click", async () => {
+		const label = nameInput.value.trim();
+		const content = contentInput.value.trim();
+
+		if (!label) {
+			setStatus("Template name is required.", true);
+			nameInput.focus();
+			return;
+		}
+
+		if (!content) {
+			setStatus("Template content is required.", true);
+			contentInput.focus();
+			return;
+		}
+
+		const nextTemplate = {
+			id: currentTemplateId || createUserTemplateId(label),
+			label,
+			content
+		};
+
+		const templates = getUserTemplates();
+		const existingIndex = templates.findIndex(template => template.id === nextTemplate.id);
+
+		if (existingIndex >= 0) {
+			templates[existingIndex] = nextTemplate;
+		} else {
+			templates.push(nextTemplate);
+		}
+
+		try {
+			await saveUserTemplates(templates);
+			currentTemplateId = nextTemplate.id;
+			renderTemplateList();
+			setStatus("Template saved to sync storage.");
+		} catch (error) {
+			console.error("Could not save template", error);
+			setStatus("Could not save template.", true);
+		}
+	});
+
+	deleteButton.addEventListener("click", async () => {
+		if (!currentTemplateId) return;
+
+		try {
+			const templates = getUserTemplates().filter(template => template.id !== currentTemplateId);
+			await saveUserTemplates(templates);
+			resetForm();
+			renderTemplateList();
+			setStatus("Template deleted.");
+		} catch (error) {
+			console.error("Could not delete template", error);
+			setStatus("Could not delete template.", true);
+		}
+	});
+
+	closeButton.addEventListener("click", closeTemplateManager);
+	overlay.addEventListener("click", closeTemplateManager);
+
+	overlay.__unsubscribeTemplates = subscribeToTemplates(renderTemplateList);
+
+	renderTemplateList();
+	resetForm();
 }
 
 function getInputValue(root, selector) {
@@ -590,7 +1142,7 @@ function applyTemplateToCommentEditor(template) {
 	return tiny;
 }
 
-function createTemplateDropdown(templates) {
+function createTemplateDropdown() {
 	const wrapper = document.createElement("span");
 	wrapper.id = "template-picker-wrapper";
 	wrapper.style.display = "inline-flex";
@@ -613,20 +1165,29 @@ function createTemplateDropdown(templates) {
 	placeholder.textContent = "Apply Template";
 	select.appendChild(placeholder);
 
-	const options = [
-		{ label: "3rd Strike", value: "template1" },
-		{ label: "2nd Strike", value: "template2" },
-		{ label: "Closure", value: "template3" }
-	];
-
-	for (const optionConfig of options) {
-		const option = document.createElement("option");
-		option.value = optionConfig.value;
-		option.textContent = optionConfig.label;
-		select.appendChild(option);
-	}
-
 	let originalContent = null;
+
+	const manageButton = document.createElement("button");
+	manageButton.type = "button";
+	manageButton.className = "ui-button ui-corner-all ui-widget";
+	manageButton.textContent = "Manage Templates";
+	manageButton.addEventListener("click", openTemplateManager);
+
+	function renderOptions() {
+		const selectedValue = select.value;
+		const templates = getAllTemplates();
+
+		select.replaceChildren(placeholder);
+
+		for (const template of templates) {
+			const option = document.createElement("option");
+			option.value = template.id;
+			option.textContent = template.source === "user" ? `${template.label} (Custom)` : template.label;
+			select.appendChild(option);
+		}
+
+		select.value = templates.some(template => template.id === selectedValue) ? selectedValue : "";
+	}
 
 	select.addEventListener("change", () => {
 		const tiny = getCommentEditorBody();
@@ -643,7 +1204,8 @@ function createTemplateDropdown(templates) {
 			return;
 		}
 
-		if (!templates[select.value]) {
+		const template = getTemplateById(select.value);
+		if (!template) {
 			return;
 		}
 
@@ -651,10 +1213,14 @@ function createTemplateDropdown(templates) {
 			originalContent = tiny.innerHTML;
 		}
 
-		applyTemplateToCommentEditor(templates[select.value]);
+		applyTemplateToCommentEditor(template.content);
 	});
 
 	wrapper.appendChild(select);
+	wrapper.appendChild(manageButton);
+
+	renderOptions();
+	wrapper.__unsubscribeTemplates = subscribeToTemplates(renderOptions);
 
 	return wrapper;
 }
@@ -803,12 +1369,12 @@ function createSingleLineSummaryButton(label, id) {
 // ------------------------------------------
 // Utility: to add the button to comment screen
 // ------------------------------------------
-function addTemplateButtons(container, templates) {
+function addTemplateButtons(container) {
 	// Prevent duplicates
 	if (container.querySelector("#template-picker-wrapper")) return;
 
 	const btn1 = createSingleLineSummaryButton("Fill time", "single-line-summary");
-	const templateDropdown = createTemplateDropdown(templates);
+	const templateDropdown = createTemplateDropdown();
 
 	container.appendChild(btn1);
 	container.appendChild(templateDropdown);
@@ -1084,13 +1650,11 @@ async function init() {
 	console.log("Initializing extension…");
 	initUI();            // Your Extract & Summarise feature
 	try {
-		const url = chrome.runtime.getURL("templates.json");
-		const res = await fetch(url);
-		if (!res.ok) throw new Error(`HTTP ${res.status}`);
-		const templates = await res.json();
-		watchCommentEditor(templates);
+		await initializeTemplates();
+		watchCommentEditor();
 	} catch (e) {
-		console.error("Could not load templates", e);
+		console.error("Could not initialize templates", e);
+		watchCommentEditor();
 	}
 }
 init();
@@ -1342,7 +1906,7 @@ async function refreshTicketData(dialog) {
 
 }
 
-async function watchCommentEditor(templates) {
+async function watchCommentEditor() {
 	const processedEditors = new WeakSet();
 
 	const attachButtons = (root = document) => {
@@ -1350,7 +1914,7 @@ async function watchCommentEditor(templates) {
 		for (const editor of editors) {
 			if (processedEditors.has(editor)) continue;
 
-			addTemplateButtons(editor, templates);
+			addTemplateButtons(editor);
 			processedEditors.add(editor);
 		}
 	};

@@ -1,11 +1,26 @@
 *.crx
 *.pem
 *.zip
-
+.agents/
 .secrets
+..gitignore.swp
 
+# AI assistant local configuration
 .claude/*
+.claude-flow/
+.codex/
+.swarm/
+.mcp.json
+AGENTS.md.*.bak
+CLAUDE.md.*.bak
+AGENTS.md
+CLAUDE.md
 
 .edge-debug-profile/*
 
 logo.svg
+
+# Environment variables
+.env
+.env.local
+.env.*.local

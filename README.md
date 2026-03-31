@@ -12,7 +12,7 @@ The extension currently does the following:
 - reads ticket data from the real ticket iframe instead of relying on broad page scraping
 - keeps a shared `ticketData` object across frame contexts
 - adds a template dropdown to the comment editor
-- supports quick application of the current follow-up / closure templates
+- supports quick application of built-in and user-managed templates
 - adds a warning panel above the ticket title
 - includes a `Fill time` action in the comment workflow
 
@@ -62,7 +62,14 @@ There are also status-specific exceptions:
 
 ## Templates
 
-Templates are currently stored in [chrome-extension/templates.json](/./chrome-extension/templates.json) and exposed through a dropdown in the comment editor.
+Built-in templates still ship from [chrome-extension/templates.json](/home/leo/dev/trs-on-steroids/chrome-extension/templates.json), and custom templates are stored in `chrome.storage.sync`.
+
+The comment editor now includes a `Manage Templates` action that lets you:
+
+- create, edit, and delete your own templates
+- persist them across browser restarts
+- sync them across your signed-in browser profile
+- insert any supported `ticketData` placeholder directly into the template body
 
 At the moment the built-in templates are focused on:
 
@@ -85,8 +92,8 @@ These features rely on browser-provided APIs such as `Summarizer` and optional P
 ## Repo Layout
 
 - [chrome-extension](/c:/Dev/trs-on-steroids/chrome-extension) - main extension source
-- [chrome-extension/in-page.js](/c:/Dev/trs-on-steroids/chrome-extension/in-page.js) - portal integration, ticket extraction, templates, warnings, and summary helpers
-- [chrome-extension/manifest.json](/c:/Dev/trs-on-steroids/chrome-extension/manifest.json) - extension manifest used for loading the real extension
+- [chrome-extension/in-page.js](/home/leo/dev/trs-on-steroids/chrome-extension/in-page.js) - portal integration, ticket extraction, templates, warnings, and summary helpers
+- [chrome-extension/manifest.json](/home/leo/dev/trs-on-steroids/chrome-extension/manifest.json) - extension manifest used for loading the real extension
 - [chrome-store/description/en.txt](/c:/Dev/trs-on-steroids/chrome-store/description/en.txt) - store description draft
 - [roadmap.md](/c:/Dev/trs-on-steroids/roadmap.md) - current project roadmap
 - [CONTEXT.md](/c:/Dev/trs-on-steroids/CONTEXT.md) - implementation handoff / deeper project notes
