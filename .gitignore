@@ -4,6 +4,8 @@
 .agents/
 .secrets
 ..gitignore.swp
+.hive-mind/
+
 
 # AI assistant local configuration
 .claude/*

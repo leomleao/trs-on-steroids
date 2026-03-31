@@ -296,6 +296,178 @@ function insertTextAtCursor(field, text) {
 	field.setSelectionRange(start + text.length, start + text.length);
 }
 
+function createEmptyCommentTemplateUiStore() {
+	return {
+		editorStates: new WeakMap(),
+		toolbarBindings: new WeakMap(),
+		stylesInjected: false
+	};
+}
+
+function getCommentTemplateUiStore() {
+	const shared = getSharedWindow();
+	shared.commentTemplateUiStore = shared.commentTemplateUiStore || createEmptyCommentTemplateUiStore();
+	return shared.commentTemplateUiStore;
+}
+
+function createEmptyCommentTemplateUiState() {
+	return {
+		originalContent: null,
+		appliedTemplateId: "",
+		appliedContent: "",
+		cleanTemplateApplied: false,
+		lastSelectionRange: null
+	};
+}
+
+function getCommentTemplateUiState(editorBody) {
+	const store = getCommentTemplateUiStore();
+	let state = store.editorStates.get(editorBody);
+	if (!state) {
+		state = createEmptyCommentTemplateUiState();
+		store.editorStates.set(editorBody, state);
+	}
+
+	return state;
+}
+
+function normalizeEditorMarkup(html) {
+	return String(html || "")
+		.replace(/\u200B/g, "")
+		.replace(/\s+</g, "<")
+		.replace(/>\s+/g, ">")
+		.trim();
+}
+
+function clearAppliedTemplateState(editorBody) {
+	const state = getCommentTemplateUiState(editorBody);
+	state.originalContent = null;
+	state.appliedTemplateId = "";
+	state.appliedContent = "";
+	state.cleanTemplateApplied = false;
+}
+
+function syncCleanTemplateState(editorBody) {
+	const state = getCommentTemplateUiState(editorBody);
+	if (!state.appliedContent) {
+		state.cleanTemplateApplied = false;
+		return state.cleanTemplateApplied;
+	}
+
+	state.cleanTemplateApplied = normalizeEditorMarkup(editorBody.innerHTML) === normalizeEditorMarkup(state.appliedContent);
+	return state.cleanTemplateApplied;
+}
+
+function saveEditorSelection(editorBody) {
+	const doc = editorBody.ownerDocument;
+	const selection = doc.getSelection ? doc.getSelection() : doc.defaultView?.getSelection?.();
+	if (!selection || selection.rangeCount === 0) return;
+
+	const range = selection.getRangeAt(0);
+	if (!editorBody.contains(range.commonAncestorContainer)) return;
+
+	getCommentTemplateUiState(editorBody).lastSelectionRange = range.cloneRange();
+}
+
+function restoreEditorSelection(editorBody) {
+	const doc = editorBody.ownerDocument;
+	const selection = doc.getSelection ? doc.getSelection() : doc.defaultView?.getSelection?.();
+	if (!selection) return null;
+
+	editorBody.focus();
+	selection.removeAllRanges();
+
+	const savedRange = getCommentTemplateUiState(editorBody).lastSelectionRange;
+	if (savedRange) {
+		selection.addRange(savedRange);
+		return savedRange;
+	}
+
+	const fallbackRange = doc.createRange();
+	fallbackRange.selectNodeContents(editorBody);
+	fallbackRange.collapse(false);
+	selection.addRange(fallbackRange);
+	return fallbackRange;
+}
+
+function insertPlaceholderIntoCommentEditor(placeholderToken) {
+	const tiny = getCommentEditorBody();
+	if (!tiny) return false;
+
+	const range = restoreEditorSelection(tiny);
+	if (!range) return false;
+
+	range.deleteContents();
+	const textNode = tiny.ownerDocument.createTextNode(placeholderToken);
+	range.insertNode(textNode);
+
+	range.setStartAfter(textNode);
+	range.collapse(true);
+
+	const selection = tiny.ownerDocument.getSelection ? tiny.ownerDocument.getSelection() : tiny.ownerDocument.defaultView?.getSelection?.();
+	if (selection) {
+		selection.removeAllRanges();
+		selection.addRange(range);
+	}
+
+	saveEditorSelection(tiny);
+	syncCleanTemplateState(tiny);
+	tiny.dispatchEvent(new Event("input", { bubbles: true }));
+	return true;
+}
+
+function ensureTemplateToolbarStyles() {
+	const store = getCommentTemplateUiStore();
+	if (store.stylesInjected) return;
+
+	const style = document.createElement("style");
+	style.id = "trs-template-toolbar-styles";
+	style.textContent = `
+		.trs-tox-select {
+			height: 30px;
+			min-width: 148px;
+			padding: 0 28px 0 10px;
+			border: 1px solid #c8ced6;
+			border-radius: 6px;
+			background: linear-gradient(180deg, #ffffff 0%, #f3f5f7 100%);
+			color: #222f3e;
+			font: 13px/1.2 Tahoma, Arial, sans-serif;
+			cursor: pointer;
+		}
+
+		.trs-tox-select:hover {
+			border-color: #8b97a6;
+		}
+
+		.trs-tox-select:focus {
+			outline: 2px solid #8bb0ff;
+			outline-offset: 1px;
+		}
+
+		.trs-tox-select[disabled] {
+			cursor: default;
+			opacity: 0.65;
+		}
+
+		.trs-tox-select-wrap {
+			display: inline-flex;
+			align-items: center;
+		}
+
+		.trs-template-delete {
+			color: #8f1d1d;
+		}
+
+		.trs-template-delete[aria-disabled="false"]:hover {
+			background: #fff2f2;
+			color: #b42318;
+		}
+	`;
+
+	document.head.appendChild(style);
+	store.stylesInjected = true;
+}
+
 function createTemplatePlaceholderButton(token, textarea) {
 	const button = document.createElement("button");
 	button.type = "button";
@@ -1133,96 +1305,343 @@ function getCommentEditorBody() {
 	return tiny;
 }
 
-function applyTemplateToCommentEditor(template) {
+function applyTemplateToCommentEditor(template, templateId = "") {
 	const tiny = getCommentEditorBody();
 	if (!tiny) return null;
 
 	const result = fillTemplate(template, getTicketData());
+	const state = getCommentTemplateUiState(tiny);
+
+	if (state.originalContent === null) {
+		state.originalContent = tiny.innerHTML;
+	}
+
 	tiny.innerHTML = result;
+	state.appliedTemplateId = templateId;
+	state.appliedContent = result;
+	state.cleanTemplateApplied = true;
+	saveEditorSelection(tiny);
 	return tiny;
 }
 
-function createTemplateDropdown() {
-	const wrapper = document.createElement("span");
-	wrapper.id = "template-picker-wrapper";
-	wrapper.style.display = "inline-flex";
-	wrapper.style.alignItems = "center";
-	wrapper.style.gap = "6px";
-	wrapper.style.verticalAlign = "middle";
+function createTemplateToolbarGroup() {
+	const group = document.createElement("div");
+	group.className = "tox-toolbar__group";
+	group.setAttribute("role", "toolbar");
+	group.setAttribute("data-alloy-tabstop", "true");
+	group.tabIndex = -1;
+	group.dataset.trsToolbar = "apply-template";
+
+	const wrap = document.createElement("span");
+	wrap.className = "trs-tox-select-wrap";
 
 	const select = document.createElement("select");
-	select.id = "template-picker";
-	select.className = "ui-button ui-corner-all ui-widget";
-	select.style.minWidth = "140px";
-	select.style.margin = "0 8px 0 0";
-	select.style.verticalAlign = "middle";
-	select.style.textAlign = "left";
-	select.style.padding = ".32em 1em";
+	select.className = "trs-tox-select";
 	select.setAttribute("aria-label", "Apply Template");
+	select.dataset.trsControl = "apply-template-select";
 
+	wrap.appendChild(select);
+	group.appendChild(wrap);
+	return group;
+}
+
+function createPlaceholderToolbarGroup() {
+	const group = document.createElement("div");
+	group.className = "tox-toolbar__group";
+	group.setAttribute("role", "toolbar");
+	group.setAttribute("data-alloy-tabstop", "true");
+	group.tabIndex = -1;
+	group.dataset.trsToolbar = "insert-placeholder";
+
+	const wrap = document.createElement("span");
+	wrap.className = "trs-tox-select-wrap";
+
+	const select = document.createElement("select");
+	select.className = "trs-tox-select";
+	select.setAttribute("aria-label", "Insert Placeholder");
+	select.dataset.trsControl = "insert-placeholder-select";
+
+	wrap.appendChild(select);
+	group.appendChild(wrap);
+	return group;
+}
+
+function createDeleteTemplateToolbarGroup() {
+	const group = document.createElement("div");
+	group.className = "tox-toolbar__group";
+	group.setAttribute("role", "toolbar");
+	group.setAttribute("data-alloy-tabstop", "true");
+	group.tabIndex = -1;
+	group.dataset.trsToolbar = "delete-template";
+
+	const button = document.createElement("button");
+	button.type = "button";
+	button.className = "tox-tbtn trs-template-delete";
+	button.setAttribute("aria-label", "Delete Template");
+	button.setAttribute("title", "Delete Template");
+	button.dataset.trsControl = "delete-template-button";
+	button.innerHTML = `
+		<span class="tox-icon tox-tbtn__icon-wrap">
+			<svg width="18" height="18" focusable="false" aria-hidden="true" viewBox="0 0 18 18">
+				<path fill-rule="evenodd" d="M6 2.5A1.5 1.5 0 0 1 7.5 1h3A1.5 1.5 0 0 1 12 2.5V3h2a1 1 0 1 1 0 2h-.6l-.7 9A2 2 0 0 1 10.7 16H7.3a2 2 0 0 1-2-2L4.6 5H4a1 1 0 0 1 0-2h2v-.5ZM8 3h2v-.2a.2.2 0 0 0-.2-.2H8.2a.2.2 0 0 0-.2.2V3Zm-.7 3.2a.8.8 0 0 1 .8.8v5a.8.8 0 0 1-1.6 0V7a.8.8 0 0 1 .8-.8Zm3.4 0a.8.8 0 0 1 .8.8v5a.8.8 0 0 1-1.6 0V7a.8.8 0 0 1 .8-.8Z"></path>
+			</svg>
+		</span>
+	`;
+
+	group.appendChild(button);
+	return group;
+}
+
+function renderApplyTemplateOptions(select) {
 	const placeholder = document.createElement("option");
 	placeholder.value = "";
 	placeholder.textContent = "Apply Template";
-	select.appendChild(placeholder);
 
-	let originalContent = null;
+	const templatesGroup = document.createElement("optgroup");
+	templatesGroup.label = "Templates";
 
-	const manageButton = document.createElement("button");
-	manageButton.type = "button";
-	manageButton.className = "ui-button ui-corner-all ui-widget";
-	manageButton.textContent = "Manage Templates";
-	manageButton.addEventListener("click", openTemplateManager);
-
-	function renderOptions() {
-		const selectedValue = select.value;
-		const templates = getAllTemplates();
-
-		select.replaceChildren(placeholder);
-
-		for (const template of templates) {
-			const option = document.createElement("option");
-			option.value = template.id;
-			option.textContent = template.source === "user" ? `${template.label} (Custom)` : template.label;
-			select.appendChild(option);
-		}
-
-		select.value = templates.some(template => template.id === selectedValue) ? selectedValue : "";
+	for (const template of getAllTemplates()) {
+		const option = document.createElement("option");
+		option.value = template.id;
+		option.textContent = template.source === "user" ? `${template.label} (Custom)` : template.label;
+		templatesGroup.appendChild(option);
 	}
 
-	select.addEventListener("change", () => {
-		const tiny = getCommentEditorBody();
-		if (!tiny) {
-			select.value = "";
-			return;
-		}
+	const actionsGroup = document.createElement("optgroup");
+	actionsGroup.label = "Actions";
 
-		if (select.value === "") {
-			if (originalContent !== null) {
-				tiny.innerHTML = originalContent;
-			}
-			originalContent = null;
-			return;
-		}
+	const saveOption = document.createElement("option");
+	saveOption.value = "__save_current_template__";
+	saveOption.textContent = "Save current content as new template...";
+	actionsGroup.appendChild(saveOption);
 
-		const template = getTemplateById(select.value);
-		if (!template) {
-			return;
-		}
+	select.replaceChildren(placeholder, templatesGroup, actionsGroup);
+	select.value = "";
+}
 
-		if (originalContent === null) {
-			originalContent = tiny.innerHTML;
-		}
+function renderPlaceholderOptions(select) {
+	const placeholder = document.createElement("option");
+	placeholder.value = "";
+	placeholder.textContent = "Insert Placeholder";
 
-		applyTemplateToCommentEditor(template.content);
+	const fieldsGroup = document.createElement("optgroup");
+	fieldsGroup.label = "ticketData";
+
+	for (const placeholderKey of TEMPLATE_PLACEHOLDER_KEYS) {
+		const option = document.createElement("option");
+		option.value = placeholderKey;
+		option.textContent = placeholderKey;
+		fieldsGroup.appendChild(option);
+	}
+
+	const expressionsGroup = document.createElement("optgroup");
+	expressionsGroup.label = "Expressions";
+
+	for (const expressionKey of TEMPLATE_EXPRESSION_KEYS) {
+		const option = document.createElement("option");
+		option.value = expressionKey;
+		option.textContent = expressionKey;
+		expressionsGroup.appendChild(option);
+	}
+
+	select.replaceChildren(placeholder, fieldsGroup, expressionsGroup);
+	select.value = "";
+}
+
+function updateDeleteTemplateButtonState(button) {
+	const tiny = getCommentEditorBody();
+	const cleanTemplateApplied = tiny ? syncCleanTemplateState(tiny) : false;
+
+	button.disabled = !cleanTemplateApplied;
+	button.setAttribute("aria-disabled", cleanTemplateApplied ? "false" : "true");
+	button.title = cleanTemplateApplied
+		? "Delete Template"
+		: "Delete Template is available only before the applied template is edited";
+}
+
+async function saveCurrentEditorContentAsTemplate() {
+	const tiny = getCommentEditorBody();
+	if (!tiny) return false;
+
+	const content = tiny.innerHTML.trim();
+	if (!content) {
+		alert("There is no current editor content to save as a template.");
+		return false;
+	}
+
+	const label = window.prompt("Template name");
+	if (!label) return false;
+
+	const nextTemplate = {
+		id: createUserTemplateId(label),
+		label: label.trim(),
+		content
+	};
+
+	if (!nextTemplate.label) {
+		alert("Template name is required.");
+		return false;
+	}
+
+	const templates = getUserTemplates();
+	templates.push(nextTemplate);
+
+	try {
+		await saveUserTemplates(templates);
+		return true;
+	} catch (error) {
+		console.error("Could not save template", error);
+		alert("Could not save template.");
+		return false;
+	}
+}
+
+function deleteAppliedTemplateFromEditor() {
+	const tiny = getCommentEditorBody();
+	if (!tiny) return false;
+
+	const state = getCommentTemplateUiState(tiny);
+	if (!syncCleanTemplateState(tiny) || state.originalContent === null) {
+		return false;
+	}
+
+	const confirmed = window.confirm("Delete the currently applied template and restore the previous comment?");
+	if (!confirmed) return false;
+
+	tiny.innerHTML = state.originalContent;
+	clearAppliedTemplateState(tiny);
+	saveEditorSelection(tiny);
+	tiny.dispatchEvent(new Event("input", { bubbles: true }));
+	return true;
+}
+
+function bindCommentEditorState(editorBody, updateControls) {
+	const store = getCommentTemplateUiStore();
+	if (store.toolbarBindings.has(editorBody)) return;
+
+	const syncState = () => {
+		syncCleanTemplateState(editorBody);
+		updateControls();
+	};
+
+	editorBody.addEventListener("input", syncState);
+	editorBody.addEventListener("keyup", () => {
+		saveEditorSelection(editorBody);
+		syncState();
+	});
+	editorBody.addEventListener("mouseup", () => {
+		saveEditorSelection(editorBody);
+		updateControls();
+	});
+	editorBody.ownerDocument.addEventListener("selectionchange", () => {
+		saveEditorSelection(editorBody);
 	});
 
-	wrapper.appendChild(select);
-	wrapper.appendChild(manageButton);
+	store.toolbarBindings.set(editorBody, true);
+}
 
-	renderOptions();
-	wrapper.__unsubscribeTemplates = subscribeToTemplates(renderOptions);
+function attachTemplateToolbarControls(container) {
+	ensureTemplateToolbarStyles();
 
-	return wrapper;
+	const toolbar = container.querySelector(".tox-toolbar__primary");
+	if (!toolbar) {
+		if (!container.__trsToolbarObserver) {
+			const observer = new MutationObserver(() => {
+				if (!container.querySelector(".tox-toolbar__primary")) return;
+				observer.disconnect();
+				container.__trsToolbarObserver = null;
+				attachTemplateToolbarControls(container);
+			});
+
+			observer.observe(container, { childList: true, subtree: true });
+			container.__trsToolbarObserver = observer;
+		}
+		return;
+	}
+
+	let applyGroup = toolbar.querySelector('[data-trs-toolbar="apply-template"]');
+	if (!applyGroup) {
+		applyGroup = createTemplateToolbarGroup();
+		toolbar.appendChild(applyGroup);
+	}
+
+	let placeholderGroup = toolbar.querySelector('[data-trs-toolbar="insert-placeholder"]');
+	if (!placeholderGroup) {
+		placeholderGroup = createPlaceholderToolbarGroup();
+		toolbar.appendChild(placeholderGroup);
+	}
+
+	let deleteGroup = toolbar.querySelector('[data-trs-toolbar="delete-template"]');
+	if (!deleteGroup) {
+		deleteGroup = createDeleteTemplateToolbarGroup();
+		toolbar.appendChild(deleteGroup);
+	}
+
+	const applySelect = applyGroup.querySelector('[data-trs-control="apply-template-select"]');
+	const placeholderSelect = placeholderGroup.querySelector('[data-trs-control="insert-placeholder-select"]');
+	const deleteButton = deleteGroup.querySelector('[data-trs-control="delete-template-button"]');
+
+	const updateControls = () => updateDeleteTemplateButtonState(deleteButton);
+	const tiny = getCommentEditorBody();
+	if (tiny) {
+		bindCommentEditorState(tiny, updateControls);
+		updateControls();
+	}
+
+	if (!applySelect.dataset.trsBound) {
+		applySelect.dataset.trsBound = "true";
+		applySelect.addEventListener("change", async () => {
+			const selectedValue = applySelect.value;
+			applySelect.value = "";
+
+			if (!selectedValue) return;
+
+			if (selectedValue === "__save_current_template__") {
+				await saveCurrentEditorContentAsTemplate();
+				return;
+			}
+
+			const template = getTemplateById(selectedValue);
+			if (!template) return;
+
+			const editorBody = applyTemplateToCommentEditor(template.content, template.id);
+			if (!editorBody) return;
+
+			updateControls();
+		});
+	}
+
+	if (!placeholderSelect.dataset.trsBound) {
+		placeholderSelect.dataset.trsBound = "true";
+		placeholderSelect.addEventListener("change", () => {
+			const selectedValue = placeholderSelect.value;
+			placeholderSelect.value = "";
+			if (!selectedValue) return;
+
+			insertPlaceholderIntoCommentEditor(`{{ ${selectedValue} }}`);
+			updateControls();
+		});
+	}
+
+	if (!deleteButton.dataset.trsBound) {
+		deleteButton.dataset.trsBound = "true";
+		deleteButton.addEventListener("click", () => {
+			deleteAppliedTemplateFromEditor();
+			updateControls();
+		});
+	}
+
+	if (!container.__trsTemplateSubscription) {
+		renderApplyTemplateOptions(applySelect);
+		renderPlaceholderOptions(placeholderSelect);
+		container.__trsTemplateSubscription = subscribeToTemplates(() => {
+			renderApplyTemplateOptions(applySelect);
+			updateControls();
+		});
+	} else {
+		renderApplyTemplateOptions(applySelect);
+		renderPlaceholderOptions(placeholderSelect);
+	}
 }
 
 function startLoadingSpinner(field, extraField = null) {
@@ -1370,14 +1789,12 @@ function createSingleLineSummaryButton(label, id) {
 // Utility: to add the button to comment screen
 // ------------------------------------------
 function addTemplateButtons(container) {
-	// Prevent duplicates
-	if (container.querySelector("#template-picker-wrapper")) return;
+	if (!container.querySelector("#single-line-summary")) {
+		const btn1 = createSingleLineSummaryButton("Fill time", "single-line-summary");
+		container.appendChild(btn1);
+	}
 
-	const btn1 = createSingleLineSummaryButton("Fill time", "single-line-summary");
-	const templateDropdown = createTemplateDropdown();
-
-	container.appendChild(btn1);
-	container.appendChild(templateDropdown);
+	attachTemplateToolbarControls(container);
 }
 
 // ------------------------------------------
@@ -1907,15 +2324,10 @@ async function refreshTicketData(dialog) {
 }
 
 async function watchCommentEditor() {
-	const processedEditors = new WeakSet();
-
 	const attachButtons = (root = document) => {
 		const editors = root.querySelectorAll("#divEditHDEntryComment_IO");
 		for (const editor of editors) {
-			if (processedEditors.has(editor)) continue;
-
 			addTemplateButtons(editor);
-			processedEditors.add(editor);
 		}
 	};
 
