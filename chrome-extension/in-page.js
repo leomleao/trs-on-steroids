@@ -1805,6 +1805,33 @@ function startLoadingSpinner(field, extraField = null) {
 	};
 }
 
+function showTemporaryFieldMessage(field, message, durationMs = 3000) {
+	if (!field) return;
+
+	if (field.__trsMessageTimeout) {
+		clearTimeout(field.__trsMessageTimeout);
+		delete field.__trsMessageTimeout;
+	}
+
+	const previousValue = field.value;
+	const previousTransition = field.style.transition;
+	const previousOpacity = field.style.opacity;
+
+	field.value = message;
+	field.style.transition = "opacity 0.6s ease";
+	field.style.opacity = "1";
+
+	field.__trsMessageTimeout = window.setTimeout(() => {
+		field.style.opacity = "0";
+
+		window.setTimeout(() => {
+			field.value = previousValue;
+			field.style.opacity = previousOpacity || "";
+			field.style.transition = previousTransition || "";
+		}, 600);
+	}, Math.max(0, durationMs - 600));
+}
+
 async function generateFillTimeSummary(input) {
 	const languageOptions = {
 		expectedInputs: [{ type: "text", languages: ["en"] }],
@@ -1844,6 +1871,98 @@ async function generateFillTimeSummary(input) {
 	return await summarizer.summarize(input);
 }
 
+function roundDurationToQuarterHours(value) {
+	const numericValue = Number(value);
+	if (!Number.isFinite(numericValue) || numericValue <= 0) return null;
+	return Math.round(numericValue * 4) / 4;
+}
+
+function parseExplicitDurationsFromText(input) {
+	const text = String(input || "").toLowerCase();
+	const durations = [];
+	const seen = new Set();
+	const occupiedRanges = [];
+
+	const rangesOverlap = (start, end) => occupiedRanges.some(range => start < range.end && end > range.start);
+	const markRange = (start, end) => {
+		if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return;
+		occupiedRanges.push({ start, end });
+	};
+
+	const addDuration = (hours, matchIndex, sourceText) => {
+		const roundedHours = roundDurationToQuarterHours(hours);
+		if (!roundedHours) return;
+
+		const key = `${matchIndex}:${roundedHours}`;
+		if (seen.has(key)) return;
+		seen.add(key);
+		durations.push({
+			hours: roundedHours,
+			index: matchIndex,
+			sourceText: sourceText.trim()
+		});
+	};
+
+	const combinedPattern = /(\d+(?:\.\d+)?)\s*(?:hours?|hrs?|hr|h)\s*(?:and\s*)?(\d+(?:\.\d+)?)\s*(?:minutes?|mins?|min|m)\b|(\d+(?:\.\d+)?)\s*(?:minutes?|mins?|min|m)\s*(?:and\s*)?(\d+(?:\.\d+)?)\s*(?:hours?|hrs?|hr|h)\b/gi;
+	for (const match of text.matchAll(combinedPattern)) {
+		const matchIndex = match.index ?? 0;
+		const matchEnd = matchIndex + match[0].length;
+
+		if (match[1] && match[2]) {
+			addDuration(Number(match[1]) + Number(match[2]) / 60, matchIndex, match[0]);
+			markRange(matchIndex, matchEnd);
+			continue;
+		}
+
+		if (match[3] && match[4]) {
+			addDuration(Number(match[4]) + Number(match[3]) / 60, matchIndex, match[0]);
+			markRange(matchIndex, matchEnd);
+		}
+	}
+
+	const halfHourPattern = /\bhalf\s+(?:an?\s+)?hour\b/gi;
+	for (const match of text.matchAll(halfHourPattern)) {
+		const matchIndex = match.index ?? 0;
+		const matchEnd = matchIndex + match[0].length;
+		if (rangesOverlap(matchIndex, matchEnd)) continue;
+		addDuration(0.5, matchIndex, match[0]);
+		markRange(matchIndex, matchEnd);
+	}
+
+	const numericPattern = /(\d+(?:\.\d+)?)\s*(hours?|hrs?|hr|h|minutes?|mins?|min|m)\b/gi;
+	for (const match of text.matchAll(numericPattern)) {
+		const matchIndex = match.index ?? 0;
+		const matchEnd = matchIndex + match[0].length;
+		if (rangesOverlap(matchIndex, matchEnd)) continue;
+
+		const amount = Number(match[1]);
+		const unit = match[2];
+		if (!Number.isFinite(amount)) continue;
+
+		if (/^h(?:ours?)?$|^hrs?$/.test(unit)) {
+			addDuration(amount, matchIndex, match[0]);
+			continue;
+		}
+
+		addDuration(amount / 60, matchIndex, match[0]);
+	}
+
+	return durations.sort((a, b) => a.index - b.index);
+}
+
+function resolveDeterministicDuration(durations) {
+	if (!durations.length) {
+		return { duration: null, reason: "missing" };
+	}
+
+	const distinctDurations = [...new Set(durations.map(entry => entry.hours))];
+	if (distinctDurations.length === 1) {
+		return { duration: distinctDurations[0], reason: "explicit-single" };
+	}
+
+	return { duration: null, reason: "conflicting" };
+}
+
 async function estimateDuration(input) {
 	const languageOptions = {
 		expectedInputs: [{ type: "text", languages: ["en"] }],
@@ -1865,7 +1984,7 @@ async function estimateDuration(input) {
 				const raw = await session.prompt(AI_PROMPTS.fillTimeDurationUser(input));
 				let duration = parseFloat(raw);
 				if (isNaN(duration) || duration <= 0) duration = 1;
-				return Math.round(duration * 4) / 4;
+				return roundDurationToQuarterHours(duration) ?? 1;
 			} catch (err) {
 				console.warn("LanguageModel duration estimate failed:", err);
 			} finally {
@@ -1875,6 +1994,23 @@ async function estimateDuration(input) {
 	}
 
 	return null; // No fallback for duration — field left unchanged
+}
+
+async function resolveDurationFromCommentContent(commentHtml) {
+	const normalizedComment = normalizeRichText(commentHtml);
+	const explicitDurations = parseExplicitDurationsFromText(normalizedComment);
+	const explicitResolution = resolveDeterministicDuration(explicitDurations);
+
+	if (explicitResolution.duration !== null) {
+		return explicitResolution.duration;
+	}
+
+	const aiEstimate = await estimateDuration(normalizedComment);
+	if (aiEstimate !== null) {
+		return aiEstimate;
+	}
+
+	return explicitDurations[0]?.hours ?? null;
 }
 
 async function runFillTimeFromCommentEditor() {
@@ -1890,12 +2026,20 @@ async function runFillTimeFromCommentEditor() {
 	if (!summaryField) return;
 
 	const commentContent = tiny.innerHTML;
+	if (!normalizeRichText(commentContent)) {
+		showTemporaryFieldMessage(
+			summaryField,
+			"This function uses local AI to infer your time based on comment content."
+		);
+		return;
+	}
+
 	const stopSpinner = startLoadingSpinner(summaryField, durationField);
 
 	try {
 		const [summary, duration] = await Promise.all([
 			generateFillTimeSummary(commentContent),
-			durationField ? estimateDuration(commentContent) : Promise.resolve(null)
+			durationField ? resolveDurationFromCommentContent(commentContent) : Promise.resolve(null)
 		]);
 
 		stopSpinner(summary ?? "", duration);
@@ -2360,11 +2504,13 @@ Infer what work was done from the comment. Be professional and clear.`,
 	fillTimeDurationSystem: `You are an assistant that estimates IT support task durations.
 Always respond with only a number.
 Output a single decimal number in hours using 0.25 increments (e.g. 0.25, 0.5, 0.75, 1, 1.25, 1.5).
+If the comment explicitly states time spent or duration, preserve that stated duration instead of re-estimating it.
+If the comment contains multiple conflicting durations, prefer the duration that most likely represents actual time spent.
 No text, no units, no explanation — only the number.
 If unsure, round up to the nearest 0.25.`,
 
 	fillTimeDurationUser: (input) =>
-		`Estimate the hours required to complete this IT support task based on the comment:\n\n${input}`
+		`Estimate the hours required to complete this IT support task based on the comment. If the comment already states the time spent, return that duration exactly in hours using 0.25 increments.\n\n${input}`
 };
 
 // ---------------------------
