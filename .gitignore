@@ -18,6 +18,8 @@ CLAUDE.md.*.bak
 AGENTS.md
 CLAUDE.md
 
+/node_modules/
+
 .edge-debug-profile/*
 
 logo.svg
@@ -26,3 +28,5 @@ logo.svg
 .env
 .env.local
 .env.*.local
+
+*.jpg

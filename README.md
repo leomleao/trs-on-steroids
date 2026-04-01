@@ -64,12 +64,13 @@ There are also status-specific exceptions:
 
 Built-in templates still ship from [chrome-extension/templates.json](/home/leo/dev/trs-on-steroids/chrome-extension/templates.json), and custom templates are stored in `chrome.storage.sync`.
 
-The comment editor now includes a `Manage Templates` action that lets you:
+The comment editor now includes a `Manage Templates` action (last option in the Apply Template dropdown) that lets you:
 
 - create, edit, and delete your own templates
+- edit template body with a WYSIWYG editor — HTML is rendered visually and line breaks are stored correctly
 - persist them across browser restarts
 - sync them across your signed-in browser profile
-- insert any supported `ticketData` placeholder directly into the template body
+- insert any supported `ticketData` placeholder directly into the template body at the cursor position
 
 At the moment the built-in templates are focused on:
 

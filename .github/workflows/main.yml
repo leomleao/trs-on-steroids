@@ -26,7 +26,7 @@ jobs:
         run: zip -r ../extension.zip .
 
       - name: Publish Edge Add-on
-        uses: baptistecdr/release-edge-extension
+        uses: baptistecdr/release-edge-extension@v2.1.0
         with:
           api-key: ${{ secrets.EDGE_API_KEY }}
           client-id: ${{ secrets.EDGE_CLIENT_ID }}

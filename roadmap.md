@@ -35,6 +35,11 @@ Keep TRS on Steroids useful, simple, and reliable for day-to-day ticket work ins
 - [x] Let `Apply Template` act as a restore action for the original comment content
 - [x] Keep `Fill time` as a separate action
 - [x] Improve control alignment in the comment editor toolbar
+- [x] Move "Manage Templates" into the Apply Template dropdown (removed standalone button)
+- [x] Restyle Manage Templates modal to match portal jQuery UI dialog appearance
+- [x] Fix Manage Templates modal inputs being un-typeable (jQuery UI focus trap)
+- [x] Replace raw HTML textarea with WYSIWYG contenteditable editor (renders HTML, correct line break handling)
+- [x] Fix Enter key being swallowed by jQuery UI in the template editor
 
 ### Notification Area
 - [x] Add a general notification section above the ticket title
@@ -200,6 +205,7 @@ The extension currently uses only a content script with no background worker or 
 | Persist ticket context across navigations | `storage.session` | Small | Planned |
 | Allow users to customize their own templates | `storage.sync` | Medium | Done |
 | Roaming template and settings storage | `storage.sync` | Small | Done |
+| WYSIWYG template editor (HTML rendering + correct line breaks) | — | Small | Done |
 | Keyboard shortcuts for Fill Time, templates, side panel | `commands` | Small | Planned |
 | Right-click "Fill time from selection" | `contextMenus` | Small | Planned |
 | Side panel: ticket dashboard + AI output | `sidePanel`, `storage` | Large | Planned |

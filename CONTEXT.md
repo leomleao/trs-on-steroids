@@ -355,3 +355,56 @@ Upgraded the "Fill time" button (`createSingleLineSummaryButton`) to use the sam
 ### Files Modified
 - `chrome-extension/in-page.js` — all changes in this file only.
 - `chrome-extension/manifest.json` — version bumped to `0.1.4`.
+
+---
+
+## Session 4 — Manage Templates UI Overhaul
+
+### Overview
+Moved the "Manage Templates" action from a standalone button into the "Apply Template" dropdown, fixed the modal so text could actually be edited (jQuery UI focus trap), restyled the modal to match the portal's jQuery UI dialog appearance, and replaced the raw HTML textarea with a WYSIWYG contenteditable editor that renders HTML and handles line breaks correctly.
+
+### Problems Addressed
+- "Manage Templates" was a separate button; the dropdown was the cleaner home for it.
+- The previous toolbar injection approach targeted `.tox-toolbar__primary` inside `#divEditHDEntryComment_IO`, but TinyMCE actually lives in the `edit_popup_comment` iframe — not inside that container. The observer never fired, so the dropdown disappeared.
+- The Manage Templates modal used `document.body` as the overlay parent, which put it outside the jQuery UI focus trap boundary and made all inputs un-typeable. Appending inside the `.ui-dialog` wrapper fixed this.
+- The modal originally used a plain `<textarea>` for template body editing, which showed raw HTML and saved literal `\n` characters instead of `<br>`.
+- Inside the contenteditable div, pressing Enter was silently swallowed by the jQuery UI dialog's keyboard handler.
+
+### Key Changes
+
+#### Dropdown: "Manage Templates" as last option (`renderApplyTemplateOptions`)
+- Added `__manage_templates__` option to the Actions `<optgroup>` in the Apply Template `<select>`.
+- Removed the standalone "Manage Templates" button — the dropdown is now the single entry point.
+
+#### `createTemplateDropdown()` — reverted injection approach
+- Dropped the TinyMCE toolbar injection path (it targeted `.tox-toolbar__primary` which is inside the `edit_popup_comment` iframe, unreachable from the main page).
+- Reverted to the original approach: appends the `<select>` directly to `#divEditHDEntryComment_IO` alongside "Fill time".
+
+#### `openTemplateManager()` — focus trap fix
+- Overlay is now appended inside `document.querySelector("#divEditHDEntryComment_IO")?.closest(".ui-dialog")` instead of `document.body`.
+- This places the modal inside the jQuery UI dialog's focus management boundary so all inputs are typeable.
+
+#### `openTemplateManager()` — jQuery UI dialog styling
+- Titlebar: `background:rgb(233,233,233)`, `font:700 11px Tahoma,Arial,sans-serif`, jQuery UI close button with `ui-icon-closethick`.
+- Inputs: `font:11px Tahoma,Arial,sans-serif`, `border:1px solid rgb(197,197,197)`, `border-radius:3px`.
+- Buttonpane: `border-top:1px solid rgb(221,221,221)`, matches portal dialog layout exactly.
+
+#### `openTemplateManager()` — contenteditable WYSIWYG editor
+- Replaced `<textarea>` for template body with `<div contenteditable="true">`.
+- `setEditorContent(html)` sets `innerHTML` — HTML is rendered visually, not shown as raw text.
+- `getEditorContent()` reads `innerHTML` — line breaks are stored as `<p>` / `<br>` elements, never as raw `\n`.
+- `insertEditorToken(token)` saves the selection on `blur`, restores it, then uses `document.execCommand('insertText')` to place placeholders at the cursor.
+- Added `getTinyMceGlobal()` helper: checks `window.tinymce` first, then crawls into the `#txt_ed_comment_ifr` parent window. If found, a hidden `<textarea id="trs-template-content-editor">` is used as the TinyMCE init target and the contenteditable div is hidden.
+- `createTemplatePlaceholderButton` now accepts either a textarea element or a callback function as its second argument (backward compatible).
+- `closeAndCleanup()` calls `tinyEditor?.remove()` before closing the modal to prevent TinyMCE leaks.
+
+#### Enter-key fix in contenteditable
+- `keydown` and `keypress` events on the contenteditable div call `e.stopPropagation()` to prevent the jQuery UI dialog from swallowing keyboard input.
+
+### Architectural Notes
+- **TinyMCE is initialized by the portal** inside the `edit_popup_comment` iframe. The extension does not bundle or load TinyMCE. `getTinyMceGlobal()` crawls `#txt_ed_comment_ifr.ownerDocument.defaultView.tinymce` to obtain it.
+- **`getTinyMceGlobal()` may return null** if the comment editor isn't open yet when the Manage Templates modal is opened — the contenteditable div is the always-available fallback.
+- **Overlay parent matters for jQuery UI focus traps** — any modal overlaid on a jQuery UI dialog must be appended inside that dialog's DOM subtree, not on `document.body`.
+
+### Files Modified
+- `chrome-extension/in-page.js` — all changes in this file only.

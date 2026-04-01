@@ -38,18 +38,6 @@ function waitForElement(selector, root = document) {
 	});
 }
 
-async function waitForElementDeep(selector, root = document, timeoutMs = 10000, intervalMs = 250) {
-	const startedAt = Date.now();
-
-	while (Date.now() - startedAt < timeoutMs) {
-		const found = findElement(selector, root);
-		if (found) return found;
-
-		await new Promise(resolve => setTimeout(resolve, intervalMs));
-	}
-
-	return null;
-}
 
 function getSharedWindow() {
 	try {
@@ -331,32 +319,6 @@ function getCommentTemplateUiState(editorBody) {
 	return state;
 }
 
-function normalizeEditorMarkup(html) {
-	return String(html || "")
-		.replace(/\u200B/g, "")
-		.replace(/\s+</g, "<")
-		.replace(/>\s+/g, ">")
-		.trim();
-}
-
-function clearAppliedTemplateState(editorBody) {
-	const state = getCommentTemplateUiState(editorBody);
-	state.originalContent = null;
-	state.appliedTemplateId = "";
-	state.appliedContent = "";
-	state.cleanTemplateApplied = false;
-}
-
-function syncCleanTemplateState(editorBody) {
-	const state = getCommentTemplateUiState(editorBody);
-	if (!state.appliedContent) {
-		state.cleanTemplateApplied = false;
-		return state.cleanTemplateApplied;
-	}
-
-	state.cleanTemplateApplied = normalizeEditorMarkup(editorBody.innerHTML) === normalizeEditorMarkup(state.appliedContent);
-	return state.cleanTemplateApplied;
-}
 
 function saveEditorSelection(editorBody) {
 	const doc = editorBody.ownerDocument;
@@ -369,112 +331,12 @@ function saveEditorSelection(editorBody) {
 	getCommentTemplateUiState(editorBody).lastSelectionRange = range.cloneRange();
 }
 
-function restoreEditorSelection(editorBody) {
-	const doc = editorBody.ownerDocument;
-	const selection = doc.getSelection ? doc.getSelection() : doc.defaultView?.getSelection?.();
-	if (!selection) return null;
 
-	editorBody.focus();
-	selection.removeAllRanges();
-
-	const savedRange = getCommentTemplateUiState(editorBody).lastSelectionRange;
-	if (savedRange) {
-		selection.addRange(savedRange);
-		return savedRange;
-	}
-
-	const fallbackRange = doc.createRange();
-	fallbackRange.selectNodeContents(editorBody);
-	fallbackRange.collapse(false);
-	selection.addRange(fallbackRange);
-	return fallbackRange;
-}
-
-function insertPlaceholderIntoCommentEditor(placeholderToken) {
-	const tiny = getCommentEditorBody();
-	if (!tiny) return false;
-
-	const range = restoreEditorSelection(tiny);
-	if (!range) return false;
-
-	range.deleteContents();
-	const textNode = tiny.ownerDocument.createTextNode(placeholderToken);
-	range.insertNode(textNode);
-
-	range.setStartAfter(textNode);
-	range.collapse(true);
-
-	const selection = tiny.ownerDocument.getSelection ? tiny.ownerDocument.getSelection() : tiny.ownerDocument.defaultView?.getSelection?.();
-	if (selection) {
-		selection.removeAllRanges();
-		selection.addRange(range);
-	}
-
-	saveEditorSelection(tiny);
-	syncCleanTemplateState(tiny);
-	tiny.dispatchEvent(new Event("input", { bubbles: true }));
-	return true;
-}
-
-function ensureTemplateToolbarStyles() {
-	const store = getCommentTemplateUiStore();
-	if (store.stylesInjected) return;
-
-	const style = document.createElement("style");
-	style.id = "trs-template-toolbar-styles";
-	style.textContent = `
-		.trs-tox-select {
-			height: 30px;
-			min-width: 148px;
-			padding: 0 28px 0 10px;
-			border: 1px solid #c8ced6;
-			border-radius: 6px;
-			background: linear-gradient(180deg, #ffffff 0%, #f3f5f7 100%);
-			color: #222f3e;
-			font: 13px/1.2 Tahoma, Arial, sans-serif;
-			cursor: pointer;
-		}
-
-		.trs-tox-select:hover {
-			border-color: #8b97a6;
-		}
-
-		.trs-tox-select:focus {
-			outline: 2px solid #8bb0ff;
-			outline-offset: 1px;
-		}
-
-		.trs-tox-select[disabled] {
-			cursor: default;
-			opacity: 0.65;
-		}
-
-		.trs-tox-select-wrap {
-			display: inline-flex;
-			align-items: center;
-		}
-
-		.trs-template-delete {
-			color: #8f1d1d;
-		}
-
-		.trs-template-delete[aria-disabled="false"]:hover {
-			background: #fff2f2;
-			color: #b42318;
-		}
-	`;
-
-	document.head.appendChild(style);
-	store.stylesInjected = true;
-}
-
-function createTemplatePlaceholderButton(token, textarea) {
+function createTemplatePlaceholderButton(token, targetOrCallback) {
 	const button = document.createElement("button");
 	button.type = "button";
 	button.className = "ui-button ui-corner-all ui-widget";
-	button.style.fontSize = "12px";
-	button.style.padding = ".2em .55em";
-	button.style.margin = "0";
+	button.style.cssText = "font:11px Tahoma,Arial,sans-serif;padding:.15em .4em;margin:0;";
 	button.textContent = `{{ ${token} }}`;
 
 	const previewValue = getTicketData()?.[token];
@@ -483,7 +345,11 @@ function createTemplatePlaceholderButton(token, textarea) {
 	}
 
 	button.addEventListener("click", () => {
-		insertTextAtCursor(textarea, `{{ ${token} }}`);
+		if (typeof targetOrCallback === "function") {
+			targetOrCallback(`{{ ${token} }}`);
+		} else {
+			insertTextAtCursor(targetOrCallback, `{{ ${token} }}`);
+		}
 	});
 
 	return button;
@@ -506,60 +372,49 @@ function openTemplateManager() {
 
 	const overlay = document.createElement("div");
 	overlay.id = TEMPLATE_MANAGER_OVERLAY_ID;
-	overlay.style.position = "fixed";
-	overlay.style.inset = "0";
-	overlay.style.background = "rgba(15, 23, 42, 0.45)";
-	overlay.style.display = "flex";
-	overlay.style.alignItems = "center";
-	overlay.style.justifyContent = "center";
-	overlay.style.zIndex = "2147483647";
+	overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;z-index:2147483647;";
 
 	const modal = document.createElement("div");
-	modal.style.width = "min(920px, 94vw)";
-	modal.style.maxHeight = "88vh";
-	modal.style.overflow = "auto";
-	modal.style.background = "#ffffff";
-	modal.style.border = "1px solid #cbd5e1";
-	modal.style.borderRadius = "12px";
-	modal.style.boxShadow = "0 18px 60px rgba(15, 23, 42, 0.3)";
-	modal.style.padding = "20px";
-	modal.style.fontFamily = "Segoe UI, sans-serif";
+	modal.style.cssText = "width:min(820px,94vw);max-height:90vh;display:flex;flex-direction:column;background:#fff;border:1px solid rgb(197,197,197);border-radius:3px;font:11px Tahoma,Arial,sans-serif;color:rgb(51,51,51);overflow:hidden;";
 	modal.addEventListener("click", event => event.stopPropagation());
 
-	const title = document.createElement("h2");
-	title.textContent = "Manage Templates";
-	title.style.margin = "0 0 8px";
-	title.style.fontSize = "20px";
+	// Title bar
+	const titlebar = document.createElement("div");
+	titlebar.style.cssText = "display:flex;align-items:center;justify-content:space-between;padding:4px 11px;background:rgb(233,233,233);border-bottom:1px solid rgb(221,221,221);border-radius:3px 3px 0 0;flex-shrink:0;";
 
-	const subtitle = document.createElement("p");
-	subtitle.textContent = "Custom templates are saved to browser sync storage and appear immediately in the template picker.";
-	subtitle.style.margin = "0 0 16px";
-	subtitle.style.color = "#475569";
+	const titleSpan = document.createElement("span");
+	titleSpan.textContent = "Manage Templates";
+	titleSpan.style.cssText = "font:700 11px Tahoma,Arial,sans-serif;";
+
+	const titleCloseButton = document.createElement("button");
+	titleCloseButton.type = "button";
+	titleCloseButton.className = "ui-button ui-corner-all ui-widget ui-button-icon-only ui-dialog-titlebar-close";
+	titleCloseButton.title = "Close";
+	titleCloseButton.innerHTML = `<span class="ui-button-icon ui-icon ui-icon-closethick"></span><span class="ui-button-icon-space"> </span>Close`;
+
+	titlebar.appendChild(titleSpan);
+	titlebar.appendChild(titleCloseButton);
+
+	// Content
+	const content = document.createElement("div");
+	content.style.cssText = "padding:8px 11px;overflow:auto;flex:1;";
 
 	const layout = document.createElement("div");
-	layout.style.display = "grid";
-	layout.style.gridTemplateColumns = "minmax(220px, 260px) minmax(0, 1fr)";
-	layout.style.gap = "18px";
+	layout.style.cssText = "display:grid;grid-template-columns:minmax(180px,220px) minmax(0,1fr);gap:12px;";
 
 	const listPanel = document.createElement("div");
 	const listLabel = document.createElement("label");
 	listLabel.textContent = "Your Templates";
-	listLabel.style.display = "block";
-	listLabel.style.fontWeight = "600";
-	listLabel.style.marginBottom = "8px";
+	listLabel.style.cssText = "display:block;font-weight:700;margin-bottom:4px;";
 
 	const templateList = document.createElement("select");
 	templateList.size = 10;
-	templateList.style.width = "100%";
-	templateList.style.minHeight = "260px";
-	templateList.style.padding = "8px";
+	templateList.style.cssText = "width:100%;min-height:220px;padding:4px;font:11px Tahoma,Arial,sans-serif;";
 	templateList.className = "ui-widget ui-widget-content ui-corner-all";
 
 	const listHint = document.createElement("p");
-	listHint.textContent = "Built-in templates stay available in the dropdown; this editor manages your custom ones.";
-	listHint.style.fontSize = "12px";
-	listHint.style.color = "#64748b";
-	listHint.style.margin = "8px 0 0";
+	listHint.textContent = "Built-in templates are read-only; this editor manages your custom ones.";
+	listHint.style.cssText = "margin:4px 0 0;color:rgb(100,100,100);";
 
 	listPanel.appendChild(listLabel);
 	listPanel.appendChild(templateList);
@@ -569,63 +424,125 @@ function openTemplateManager() {
 
 	const nameLabel = document.createElement("label");
 	nameLabel.textContent = "Template Name";
-	nameLabel.style.display = "block";
-	nameLabel.style.fontWeight = "600";
-	nameLabel.style.marginBottom = "6px";
+	nameLabel.style.cssText = "display:block;font-weight:700;margin-bottom:3px;";
 
 	const nameInput = document.createElement("input");
 	nameInput.type = "text";
 	nameInput.placeholder = "Example: Awaiting Customer Update";
-	nameInput.style.width = "100%";
-	nameInput.style.boxSizing = "border-box";
-	nameInput.style.marginBottom = "12px";
-	nameInput.style.padding = "10px 12px";
+	nameInput.style.cssText = "width:100%;box-sizing:border-box;margin-bottom:8px;padding:4px 6px;font:11px Tahoma,Arial,sans-serif;border:1px solid rgb(197,197,197);border-radius:3px;";
 
 	const contentLabel = document.createElement("label");
-	contentLabel.textContent = "Template HTML";
-	contentLabel.style.display = "block";
-	contentLabel.style.fontWeight = "600";
-	contentLabel.style.marginBottom = "6px";
+	contentLabel.textContent = "Template Content";
+	contentLabel.style.cssText = "display:block;font-weight:700;margin-bottom:3px;";
 
+	// contenteditable div — renders HTML and converts user line breaks to <br>/<p>
+	const contentDiv = document.createElement("div");
+	contentDiv.contentEditable = "true";
+	contentDiv.style.cssText = "width:100%;min-height:180px;box-sizing:border-box;padding:4px 6px;margin-bottom:8px;overflow:auto;font:11px Tahoma,Arial,sans-serif;border:1px solid rgb(197,197,197);border-radius:3px;background:#fff;";
+
+	// Hidden textarea used as TinyMCE target (only when TinyMCE is available)
 	const contentInput = document.createElement("textarea");
-	contentInput.placeholder = "<p>Hello {{ personName }},</p>";
-	contentInput.style.width = "100%";
-	contentInput.style.minHeight = "240px";
-	contentInput.style.boxSizing = "border-box";
-	contentInput.style.padding = "12px";
-	contentInput.style.resize = "vertical";
-	contentInput.style.marginBottom = "12px";
+	contentInput.id = "trs-template-content-editor";
+	contentInput.style.display = "none";
+
+	let tinyEditor = null;
+	let savedSelection = null;
+
+	function getEditorContent() {
+		return tinyEditor ? tinyEditor.getContent() : contentDiv.innerHTML;
+	}
+
+	function setEditorContent(html) {
+		if (tinyEditor) {
+			tinyEditor.setContent(html);
+		} else {
+			contentDiv.innerHTML = html;
+		}
+	}
+
+	function insertEditorToken(token) {
+		if (tinyEditor) {
+			tinyEditor.insertContent(token);
+			tinyEditor.focus();
+			return;
+		}
+		contentDiv.focus();
+		if (savedSelection) {
+			const sel = window.getSelection();
+			sel.removeAllRanges();
+			sel.addRange(savedSelection);
+		}
+		document.execCommand("insertText", false, token);
+	}
+
+	contentDiv.addEventListener("blur", () => {
+		const sel = window.getSelection();
+		savedSelection = sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null;
+	});
+
+	// Prevent jQuery UI dialog from swallowing keyboard input in the editor
+	contentDiv.addEventListener("keydown", (e) => e.stopPropagation());
+	contentDiv.addEventListener("keypress", (e) => e.stopPropagation());
+
+	const tinymce = getTinyMceGlobal();
+	if (tinymce) {
+		contentDiv.style.display = "none";
+		contentInput.style.display = "";
+		Promise.resolve().then(() => {
+			tinymce.init({
+				target: contentInput,
+				height: 200,
+				menubar: false,
+				toolbar: "bold italic underline | bullist numlist | removeformat",
+				plugins: "lists",
+				setup(editor) {
+					tinyEditor = editor;
+					editor.on("init", () => {
+						if (contentInput._pendingContent !== undefined) {
+							editor.setContent(contentInput._pendingContent);
+							delete contentInput._pendingContent;
+						}
+					});
+				}
+			});
+		});
+	}
 
 	const placeholderLabel = document.createElement("div");
 	placeholderLabel.textContent = "Insert placeholders from ticketData";
-	placeholderLabel.style.fontWeight = "600";
-	placeholderLabel.style.marginBottom = "8px";
+	placeholderLabel.style.cssText = "font-weight:700;margin-bottom:4px;";
 
 	const placeholderGrid = document.createElement("div");
-	placeholderGrid.style.display = "flex";
-	placeholderGrid.style.flexWrap = "wrap";
-	placeholderGrid.style.gap = "6px";
-	placeholderGrid.style.marginBottom = "12px";
+	placeholderGrid.style.cssText = "display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px;";
 
 	for (const placeholderKey of TEMPLATE_PLACEHOLDER_KEYS) {
-		placeholderGrid.appendChild(createTemplatePlaceholderButton(placeholderKey, contentInput));
+		placeholderGrid.appendChild(createTemplatePlaceholderButton(placeholderKey, insertEditorToken));
 	}
 
 	for (const expressionKey of TEMPLATE_EXPRESSION_KEYS) {
-		placeholderGrid.appendChild(createTemplatePlaceholderButton(expressionKey, contentInput));
+		placeholderGrid.appendChild(createTemplatePlaceholderButton(expressionKey, insertEditorToken));
 	}
 
 	const helperText = document.createElement("p");
-	helperText.textContent = "Any placeholder matching ticketData will be filled when the template is applied.";
-	helperText.style.fontSize = "12px";
-	helperText.style.color = "#64748b";
-	helperText.style.margin = "0 0 16px";
+	helperText.textContent = "Placeholders matching ticketData are filled when the template is applied.";
+	helperText.style.cssText = "margin:0;color:rgb(100,100,100);";
 
-	const actions = document.createElement("div");
-	actions.style.display = "flex";
-	actions.style.flexWrap = "wrap";
-	actions.style.gap = "8px";
-	actions.style.alignItems = "center";
+	editorPanel.appendChild(nameLabel);
+	editorPanel.appendChild(nameInput);
+	editorPanel.appendChild(contentLabel);
+	editorPanel.appendChild(contentDiv);
+	editorPanel.appendChild(contentInput);
+	editorPanel.appendChild(placeholderLabel);
+	editorPanel.appendChild(placeholderGrid);
+	editorPanel.appendChild(helperText);
+
+	layout.appendChild(listPanel);
+	layout.appendChild(editorPanel);
+	content.appendChild(layout);
+
+	// Button pane
+	const buttonpane = document.createElement("div");
+	buttonpane.style.cssText = "display:flex;align-items:center;gap:6px;padding:5px 11px 6px;border-top:1px solid rgb(221,221,221);background:#fff;flex-shrink:0;";
 
 	const newButton = document.createElement("button");
 	newButton.type = "button";
@@ -648,32 +565,21 @@ function openTemplateManager() {
 	closeButton.textContent = "Close";
 
 	const status = document.createElement("span");
-	status.style.fontSize = "12px";
-	status.style.color = "#0f766e";
+	status.style.cssText = "margin-left:4px;color:rgb(51,102,51);";
 
-	actions.appendChild(newButton);
-	actions.appendChild(saveButton);
-	actions.appendChild(deleteButton);
-	actions.appendChild(closeButton);
-	actions.appendChild(status);
+	buttonpane.appendChild(newButton);
+	buttonpane.appendChild(saveButton);
+	buttonpane.appendChild(deleteButton);
+	buttonpane.appendChild(closeButton);
+	buttonpane.appendChild(status);
 
-	editorPanel.appendChild(nameLabel);
-	editorPanel.appendChild(nameInput);
-	editorPanel.appendChild(contentLabel);
-	editorPanel.appendChild(contentInput);
-	editorPanel.appendChild(placeholderLabel);
-	editorPanel.appendChild(placeholderGrid);
-	editorPanel.appendChild(helperText);
-	editorPanel.appendChild(actions);
-
-	layout.appendChild(listPanel);
-	layout.appendChild(editorPanel);
-
-	modal.appendChild(title);
-	modal.appendChild(subtitle);
-	modal.appendChild(layout);
+	modal.appendChild(titlebar);
+	modal.appendChild(content);
+	modal.appendChild(buttonpane);
 	overlay.appendChild(modal);
-	document.body.appendChild(overlay);
+
+	const container = document.querySelector("#divEditHDEntryComment_IO")?.closest(".ui-dialog") ?? document.body;
+	container.appendChild(overlay);
 
 	let currentTemplateId = "";
 
@@ -686,7 +592,7 @@ function openTemplateManager() {
 		currentTemplateId = "";
 		templateList.value = "";
 		nameInput.value = "";
-		contentInput.value = "";
+		setEditorContent("");
 		deleteButton.disabled = true;
 	}
 
@@ -700,7 +606,12 @@ function openTemplateManager() {
 		currentTemplateId = template.id;
 		templateList.value = template.id;
 		nameInput.value = template.label;
-		contentInput.value = template.content;
+		if (tinyEditor) {
+			tinyEditor.setContent(template.content);
+		} else {
+			contentInput._pendingContent = template.content;
+			contentDiv.innerHTML = template.content;
+		}
 		deleteButton.disabled = false;
 	}
 
@@ -740,7 +651,7 @@ function openTemplateManager() {
 
 	saveButton.addEventListener("click", async () => {
 		const label = nameInput.value.trim();
-		const content = contentInput.value.trim();
+		const content = getEditorContent().trim();
 
 		if (!label) {
 			setStatus("Template name is required.", true);
@@ -750,7 +661,7 @@ function openTemplateManager() {
 
 		if (!content) {
 			setStatus("Template content is required.", true);
-			contentInput.focus();
+			if (tinyEditor) tinyEditor.focus(); else contentDiv.focus();
 			return;
 		}
 
@@ -795,8 +706,15 @@ function openTemplateManager() {
 		}
 	});
 
-	closeButton.addEventListener("click", closeTemplateManager);
-	overlay.addEventListener("click", closeTemplateManager);
+	function closeAndCleanup() {
+		tinyEditor?.remove();
+		tinyEditor = null;
+		closeTemplateManager();
+	}
+
+	closeButton.addEventListener("click", closeAndCleanup);
+	titleCloseButton.addEventListener("click", closeAndCleanup);
+	overlay.addEventListener("click", closeAndCleanup);
 
 	overlay.__unsubscribeTemplates = subscribeToTemplates(renderTemplateList);
 
@@ -850,6 +768,16 @@ function normalizeRichText(html) {
 		.replace(/<[^>]+>/g, "")
 		.replace(/\n{3,}/g, "\n\n")
 		.trim();
+}
+
+function getTinyMceGlobal() {
+	if (window.tinymce) return window.tinymce;
+	const tinyFrame = findElement("#txt_ed_comment_ifr");
+	if (tinyFrame) {
+		const parentWin = tinyFrame.ownerDocument?.defaultView;
+		if (parentWin?.tinymce) return parentWin.tinymce;
+	}
+	return null;
 }
 
 function getTinyMceBody(root, dataId) {
@@ -1324,73 +1252,6 @@ function applyTemplateToCommentEditor(template, templateId = "") {
 	return tiny;
 }
 
-function createTemplateToolbarGroup() {
-	const group = document.createElement("div");
-	group.className = "tox-toolbar__group";
-	group.setAttribute("role", "toolbar");
-	group.setAttribute("data-alloy-tabstop", "true");
-	group.tabIndex = -1;
-	group.dataset.trsToolbar = "apply-template";
-
-	const wrap = document.createElement("span");
-	wrap.className = "trs-tox-select-wrap";
-
-	const select = document.createElement("select");
-	select.className = "trs-tox-select";
-	select.setAttribute("aria-label", "Apply Template");
-	select.dataset.trsControl = "apply-template-select";
-
-	wrap.appendChild(select);
-	group.appendChild(wrap);
-	return group;
-}
-
-function createPlaceholderToolbarGroup() {
-	const group = document.createElement("div");
-	group.className = "tox-toolbar__group";
-	group.setAttribute("role", "toolbar");
-	group.setAttribute("data-alloy-tabstop", "true");
-	group.tabIndex = -1;
-	group.dataset.trsToolbar = "insert-placeholder";
-
-	const wrap = document.createElement("span");
-	wrap.className = "trs-tox-select-wrap";
-
-	const select = document.createElement("select");
-	select.className = "trs-tox-select";
-	select.setAttribute("aria-label", "Insert Placeholder");
-	select.dataset.trsControl = "insert-placeholder-select";
-
-	wrap.appendChild(select);
-	group.appendChild(wrap);
-	return group;
-}
-
-function createDeleteTemplateToolbarGroup() {
-	const group = document.createElement("div");
-	group.className = "tox-toolbar__group";
-	group.setAttribute("role", "toolbar");
-	group.setAttribute("data-alloy-tabstop", "true");
-	group.tabIndex = -1;
-	group.dataset.trsToolbar = "delete-template";
-
-	const button = document.createElement("button");
-	button.type = "button";
-	button.className = "tox-tbtn trs-template-delete";
-	button.setAttribute("aria-label", "Delete Template");
-	button.setAttribute("title", "Delete Template");
-	button.dataset.trsControl = "delete-template-button";
-	button.innerHTML = `
-		<span class="tox-icon tox-tbtn__icon-wrap">
-			<svg width="18" height="18" focusable="false" aria-hidden="true" viewBox="0 0 18 18">
-				<path fill-rule="evenodd" d="M6 2.5A1.5 1.5 0 0 1 7.5 1h3A1.5 1.5 0 0 1 12 2.5V3h2a1 1 0 1 1 0 2h-.6l-.7 9A2 2 0 0 1 10.7 16H7.3a2 2 0 0 1-2-2L4.6 5H4a1 1 0 0 1 0-2h2v-.5ZM8 3h2v-.2a.2.2 0 0 0-.2-.2H8.2a.2.2 0 0 0-.2.2V3Zm-.7 3.2a.8.8 0 0 1 .8.8v5a.8.8 0 0 1-1.6 0V7a.8.8 0 0 1 .8-.8Zm3.4 0a.8.8 0 0 1 .8.8v5a.8.8 0 0 1-1.6 0V7a.8.8 0 0 1 .8-.8Z"></path>
-			</svg>
-		</span>
-	`;
-
-	group.appendChild(button);
-	return group;
-}
 
 function renderApplyTemplateOptions(select) {
 	const placeholder = document.createElement("option");
@@ -1412,52 +1273,18 @@ function renderApplyTemplateOptions(select) {
 
 	const saveOption = document.createElement("option");
 	saveOption.value = "__save_current_template__";
-	saveOption.textContent = "Save current content as new template...";
+	saveOption.textContent = "Save current as new ...";
 	actionsGroup.appendChild(saveOption);
+
+	const manageOption = document.createElement("option");
+	manageOption.value = "__manage_templates__";
+	manageOption.textContent = "Manage Templates";
+	actionsGroup.appendChild(manageOption);
 
 	select.replaceChildren(placeholder, templatesGroup, actionsGroup);
 	select.value = "";
 }
 
-function renderPlaceholderOptions(select) {
-	const placeholder = document.createElement("option");
-	placeholder.value = "";
-	placeholder.textContent = "Insert Placeholder";
-
-	const fieldsGroup = document.createElement("optgroup");
-	fieldsGroup.label = "ticketData";
-
-	for (const placeholderKey of TEMPLATE_PLACEHOLDER_KEYS) {
-		const option = document.createElement("option");
-		option.value = placeholderKey;
-		option.textContent = placeholderKey;
-		fieldsGroup.appendChild(option);
-	}
-
-	const expressionsGroup = document.createElement("optgroup");
-	expressionsGroup.label = "Expressions";
-
-	for (const expressionKey of TEMPLATE_EXPRESSION_KEYS) {
-		const option = document.createElement("option");
-		option.value = expressionKey;
-		option.textContent = expressionKey;
-		expressionsGroup.appendChild(option);
-	}
-
-	select.replaceChildren(placeholder, fieldsGroup, expressionsGroup);
-	select.value = "";
-}
-
-function updateDeleteTemplateButtonState(button) {
-	const tiny = getCommentEditorBody();
-	const cleanTemplateApplied = tiny ? syncCleanTemplateState(tiny) : false;
-
-	button.disabled = !cleanTemplateApplied;
-	button.setAttribute("aria-disabled", cleanTemplateApplied ? "false" : "true");
-	button.title = cleanTemplateApplied
-		? "Delete Template"
-		: "Delete Template is available only before the applied template is edited";
-}
 
 async function saveCurrentEditorContentAsTemplate() {
 	const tiny = getCommentEditorBody();
@@ -1496,153 +1323,7 @@ async function saveCurrentEditorContentAsTemplate() {
 	}
 }
 
-function deleteAppliedTemplateFromEditor() {
-	const tiny = getCommentEditorBody();
-	if (!tiny) return false;
 
-	const state = getCommentTemplateUiState(tiny);
-	if (!syncCleanTemplateState(tiny) || state.originalContent === null) {
-		return false;
-	}
-
-	const confirmed = window.confirm("Delete the currently applied template and restore the previous comment?");
-	if (!confirmed) return false;
-
-	tiny.innerHTML = state.originalContent;
-	clearAppliedTemplateState(tiny);
-	saveEditorSelection(tiny);
-	tiny.dispatchEvent(new Event("input", { bubbles: true }));
-	return true;
-}
-
-function bindCommentEditorState(editorBody, updateControls) {
-	const store = getCommentTemplateUiStore();
-	if (store.toolbarBindings.has(editorBody)) return;
-
-	const syncState = () => {
-		syncCleanTemplateState(editorBody);
-		updateControls();
-	};
-
-	editorBody.addEventListener("input", syncState);
-	editorBody.addEventListener("keyup", () => {
-		saveEditorSelection(editorBody);
-		syncState();
-	});
-	editorBody.addEventListener("mouseup", () => {
-		saveEditorSelection(editorBody);
-		updateControls();
-	});
-	editorBody.ownerDocument.addEventListener("selectionchange", () => {
-		saveEditorSelection(editorBody);
-	});
-
-	store.toolbarBindings.set(editorBody, true);
-}
-
-function attachTemplateToolbarControls(container) {
-	ensureTemplateToolbarStyles();
-
-	const toolbar = container.querySelector(".tox-toolbar__primary");
-	if (!toolbar) {
-		if (!container.__trsToolbarObserver) {
-			const observer = new MutationObserver(() => {
-				if (!container.querySelector(".tox-toolbar__primary")) return;
-				observer.disconnect();
-				container.__trsToolbarObserver = null;
-				attachTemplateToolbarControls(container);
-			});
-
-			observer.observe(container, { childList: true, subtree: true });
-			container.__trsToolbarObserver = observer;
-		}
-		return;
-	}
-
-	let applyGroup = toolbar.querySelector('[data-trs-toolbar="apply-template"]');
-	if (!applyGroup) {
-		applyGroup = createTemplateToolbarGroup();
-		toolbar.appendChild(applyGroup);
-	}
-
-	let placeholderGroup = toolbar.querySelector('[data-trs-toolbar="insert-placeholder"]');
-	if (!placeholderGroup) {
-		placeholderGroup = createPlaceholderToolbarGroup();
-		toolbar.appendChild(placeholderGroup);
-	}
-
-	let deleteGroup = toolbar.querySelector('[data-trs-toolbar="delete-template"]');
-	if (!deleteGroup) {
-		deleteGroup = createDeleteTemplateToolbarGroup();
-		toolbar.appendChild(deleteGroup);
-	}
-
-	const applySelect = applyGroup.querySelector('[data-trs-control="apply-template-select"]');
-	const placeholderSelect = placeholderGroup.querySelector('[data-trs-control="insert-placeholder-select"]');
-	const deleteButton = deleteGroup.querySelector('[data-trs-control="delete-template-button"]');
-
-	const updateControls = () => updateDeleteTemplateButtonState(deleteButton);
-	const tiny = getCommentEditorBody();
-	if (tiny) {
-		bindCommentEditorState(tiny, updateControls);
-		updateControls();
-	}
-
-	if (!applySelect.dataset.trsBound) {
-		applySelect.dataset.trsBound = "true";
-		applySelect.addEventListener("change", async () => {
-			const selectedValue = applySelect.value;
-			applySelect.value = "";
-
-			if (!selectedValue) return;
-
-			if (selectedValue === "__save_current_template__") {
-				await saveCurrentEditorContentAsTemplate();
-				return;
-			}
-
-			const template = getTemplateById(selectedValue);
-			if (!template) return;
-
-			const editorBody = applyTemplateToCommentEditor(template.content, template.id);
-			if (!editorBody) return;
-
-			updateControls();
-		});
-	}
-
-	if (!placeholderSelect.dataset.trsBound) {
-		placeholderSelect.dataset.trsBound = "true";
-		placeholderSelect.addEventListener("change", () => {
-			const selectedValue = placeholderSelect.value;
-			placeholderSelect.value = "";
-			if (!selectedValue) return;
-
-			insertPlaceholderIntoCommentEditor(`{{ ${selectedValue} }}`);
-			updateControls();
-		});
-	}
-
-	if (!deleteButton.dataset.trsBound) {
-		deleteButton.dataset.trsBound = "true";
-		deleteButton.addEventListener("click", () => {
-			deleteAppliedTemplateFromEditor();
-			updateControls();
-		});
-	}
-
-	if (!container.__trsTemplateSubscription) {
-		renderApplyTemplateOptions(applySelect);
-		renderPlaceholderOptions(placeholderSelect);
-		container.__trsTemplateSubscription = subscribeToTemplates(() => {
-			renderApplyTemplateOptions(applySelect);
-			updateControls();
-		});
-	} else {
-		renderApplyTemplateOptions(applySelect);
-		renderPlaceholderOptions(placeholderSelect);
-	}
-}
 
 function startLoadingSpinner(field, extraField = null) {
 	const spinnerChars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -1788,13 +1469,54 @@ function createSingleLineSummaryButton(label, id) {
 // ------------------------------------------
 // Utility: to add the button to comment screen
 // ------------------------------------------
+function createTemplateDropdown() {
+	const select = document.createElement("select");
+	select.id = "template-picker";
+	select.className = "ui-button ui-corner-all ui-widget";
+	select.style.minWidth = "140px";
+	select.style.margin = "0 8px 0 0";
+	select.style.verticalAlign = "middle";
+	select.style.textAlign = "left";
+	select.style.padding = ".32em 1em";
+	select.setAttribute("aria-label", "Apply Template");
+
+	renderApplyTemplateOptions(select);
+	select.__unsubscribeTemplates = subscribeToTemplates(() => renderApplyTemplateOptions(select));
+
+	select.addEventListener("change", async () => {
+		const selectedValue = select.value;
+		select.value = "";
+
+		if (!selectedValue) return;
+
+		if (selectedValue === "__save_current_template__") {
+			await saveCurrentEditorContentAsTemplate();
+			return;
+		}
+
+		if (selectedValue === "__manage_templates__") {
+			openTemplateManager();
+			return;
+		}
+
+		const template = getTemplateById(selectedValue);
+		if (!template) return;
+
+		applyTemplateToCommentEditor(template.content, template.id);
+	});
+
+	return select;
+}
+
 function addTemplateButtons(container) {
 	if (!container.querySelector("#single-line-summary")) {
 		const btn1 = createSingleLineSummaryButton("Fill time", "single-line-summary");
 		container.appendChild(btn1);
 	}
 
-	attachTemplateToolbarControls(container);
+	if (!container.querySelector("#template-picker")) {
+		container.appendChild(createTemplateDropdown());
+	}
 }
 
 // ------------------------------------------
