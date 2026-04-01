@@ -13,6 +13,8 @@ if (window.__trsOnSteroidsInitialized) {
 		template3: "Closure"
 	};
 	const TEMPLATE_STORAGE_KEY = "userTemplates";
+	const COMMENT_DRAFT_STORAGE_PREFIX = "commentDraft:";
+	const COMMENT_DRAFT_SAVE_DELAY_MS = 500;
 	const TEMPLATE_PLACEHOLDER_KEYS = Object.freeze(Object.keys(createEmptyTicketData()));
 	const TEMPLATE_EXPRESSION_KEYS = Object.freeze(["todayPlusDays(3)"]);
 	const TEMPLATE_MANAGER_OVERLAY_ID = "trs-template-manager-overlay";
@@ -201,6 +203,24 @@ function syncSet(items) {
 	});
 }
 
+function syncRemove(keys) {
+	return new Promise((resolve, reject) => {
+		if (!chrome?.storage?.sync) {
+			resolve();
+			return;
+		}
+
+		chrome.storage.sync.remove(keys, () => {
+			if (chrome.runtime?.lastError) {
+				reject(new Error(chrome.runtime.lastError.message));
+				return;
+			}
+
+			resolve();
+		});
+	});
+}
+
 async function loadDefaultTemplates() {
 	const url = chrome.runtime.getURL("templates.json");
 	const response = await fetch(url);
@@ -317,6 +337,74 @@ function getCommentTemplateUiState(editorBody) {
 	}
 
 	return state;
+}
+
+function createEmptyCommentDraftStore() {
+	return {
+		editorStates: new WeakMap(),
+		submitBindings: new WeakSet()
+	};
+}
+
+function getCommentDraftStore() {
+	const shared = getSharedWindow();
+	shared.commentDraftStore = shared.commentDraftStore || createEmptyCommentDraftStore();
+	return shared.commentDraftStore;
+}
+
+function createEmptyCommentDraftState() {
+	return {
+		ticketId: "",
+		listenersBound: false,
+		restoreAttempted: false,
+		restoreInProgress: false,
+		lastSavedHtml: "",
+		saveTimerId: 0,
+		bodyObserver: null,
+		toolbarObserver: null
+	};
+}
+
+function getCommentDraftState(editorBody) {
+	const store = getCommentDraftStore();
+	let state = store.editorStates.get(editorBody);
+	if (!state) {
+		state = createEmptyCommentDraftState();
+		store.editorStates.set(editorBody, state);
+	}
+
+	return state;
+}
+
+function getCommentDraftStorageKey(ticketId) {
+	const normalizedId = String(ticketId || "").trim();
+	return normalizedId ? `${COMMENT_DRAFT_STORAGE_PREFIX}${normalizedId}` : "";
+}
+
+function hasMeaningfulEditorContent(html) {
+	return Boolean(normalizeRichText(html || ""));
+}
+
+async function loadCommentDraft(ticketId) {
+	const storageKey = getCommentDraftStorageKey(ticketId);
+	if (!storageKey) return "";
+
+	const items = await syncGet([storageKey]);
+	return typeof items[storageKey] === "string" ? items[storageKey] : "";
+}
+
+async function saveCommentDraft(ticketId, html) {
+	const storageKey = getCommentDraftStorageKey(ticketId);
+	if (!storageKey) return;
+
+	await syncSet({ [storageKey]: html });
+}
+
+async function clearCommentDraft(ticketId) {
+	const storageKey = getCommentDraftStorageKey(ticketId);
+	if (!storageKey) return;
+
+	await syncRemove([storageKey]);
 }
 
 
@@ -1217,7 +1305,7 @@ function fillTemplate(template, data = {}) {
 // Utility: Button factory
 // ------------------------------------------
 
-function getCommentEditorBody() {
+function getCommentEditorBody(showAlert = true) {
 	const iframe = findElement("#txt_ed_comment_ifr");
 	if (!iframe) return null;
 
@@ -1226,11 +1314,370 @@ function getCommentEditorBody() {
 
 	const tiny = doc.querySelector("#tinymce");
 	if (!tiny) {
-		alert("TinyMCE not found.");
+		if (showAlert) {
+			alert("TinyMCE not found.");
+		}
 		return null;
 	}
 
 	return tiny;
+}
+
+function getCommentEditorIframe() {
+	return findElement("#txt_ed_comment_ifr");
+}
+
+function getCommentEditorHostDocument() {
+	return getCommentEditorIframe()?.ownerDocument || document;
+}
+
+function getCurrentTicketId(root = document) {
+	const ticketDoc = getTicketDocument(root) || getTicketDocument(document) || root;
+	return getOverviewFieldValue(ticketDoc, "ID").trim();
+}
+
+function getCommentEditorHtml(editorBody) {
+	return editorBody?.innerHTML || "";
+}
+
+function setCommentEditorHtml(editorBody, html) {
+	if (!editorBody) return;
+
+	editorBody.innerHTML = html || "";
+}
+
+function resetCommentDraftStateForTicket(state, ticketId) {
+	if (state.ticketId === ticketId) return;
+
+	if (state.saveTimerId) {
+		clearTimeout(state.saveTimerId);
+		state.saveTimerId = 0;
+	}
+
+	state.ticketId = ticketId;
+	state.restoreAttempted = false;
+	state.restoreInProgress = false;
+	state.lastSavedHtml = "";
+}
+
+async function persistCommentDraftForEditor(editorBody) {
+	const state = getCommentDraftState(editorBody);
+	if (state.restoreInProgress) return;
+
+	const ticketId = state.ticketId || getCurrentTicketId(editorBody.ownerDocument);
+	if (!ticketId) return;
+
+	const html = getCommentEditorHtml(editorBody);
+	if (!hasMeaningfulEditorContent(html)) {
+		if (state.lastSavedHtml) {
+			await clearCommentDraft(ticketId);
+			state.lastSavedHtml = "";
+		}
+		return;
+	}
+
+	if (html === state.lastSavedHtml) return;
+
+	await saveCommentDraft(ticketId, html);
+	state.lastSavedHtml = html;
+}
+
+function scheduleCommentDraftSave(editorBody) {
+	const state = getCommentDraftState(editorBody);
+	if (state.restoreInProgress) return;
+
+	if (state.saveTimerId) {
+		clearTimeout(state.saveTimerId);
+	}
+
+	state.saveTimerId = window.setTimeout(async () => {
+		state.saveTimerId = 0;
+		try {
+			await persistCommentDraftForEditor(editorBody);
+		} catch (error) {
+			console.error("Could not persist comment draft", error);
+		}
+	}, COMMENT_DRAFT_SAVE_DELAY_MS);
+}
+
+async function restoreCommentDraftForEditor(editorBody) {
+	const state = getCommentDraftState(editorBody);
+	if (state.restoreAttempted) return;
+
+	const ticketId = getCurrentTicketId(editorBody.ownerDocument);
+	state.ticketId = ticketId;
+	state.restoreAttempted = true;
+
+	if (!ticketId) return;
+
+	try {
+		const draftHtml = await loadCommentDraft(ticketId);
+		state.lastSavedHtml = draftHtml || "";
+		if (!draftHtml) return;
+
+		state.restoreInProgress = true;
+		setCommentEditorHtml(editorBody, draftHtml);
+		saveEditorSelection(editorBody);
+	} catch (error) {
+		console.error("Could not restore comment draft", error);
+	} finally {
+		state.restoreInProgress = false;
+	}
+}
+
+function createEraseDraftToolbarGroup(editorBody) {
+	const toolbarDoc = getCommentEditorHostDocument();
+	const group = toolbarDoc.createElement("div");
+	group.className = "tox-toolbar__group";
+	group.dataset.trsEraseDraftGroup = "true";
+	group.setAttribute("title", "");
+	group.setAttribute("role", "toolbar");
+	group.setAttribute("data-alloy-tabstop", "true");
+	group.tabIndex = -1;
+
+	const button = toolbarDoc.createElement("button");
+	button.type = "button";
+	button.className = "tox-tbtn";
+	button.setAttribute("aria-label", "Erase draft");
+	button.setAttribute("title", "Erase draft");
+	button.setAttribute("aria-disabled", "false");
+	button.tabIndex = -1;
+	button.dataset.trsEraseDraftButton = "true";
+	button.innerHTML = `
+		<span class="tox-icon tox-tbtn__icon-wrap">
+			<svg width="18" height="18" viewBox="0 0 24.00 24.00" fill="none"
+                    xmlns="http://www.w3.org/2000/svg">
+                    <g id="SVGRepo_bgCarrier" stroke-width="0"></g>
+                    <g id="SVGRepo_tracerCarrier" stroke-linecap="round" stroke-linejoin="round" stroke="#222f3" stroke-width="0.4800000000000001">
+                        <path d="M5.50506 11.4096L6.03539 11.9399L5.50506 11.4096ZM3 14.9522H2.25H3ZM12.5904 18.4949L12.0601 17.9646L12.5904 18.4949ZM9.04776 21V21.75V21ZM11.4096 5.50506L10.8792 4.97473L11.4096 5.50506ZM13.241 17.8444C13.5339 18.1373 14.0088 18.1373 14.3017 17.8444C14.5946 17.5515 14.5946 17.0766 14.3017 16.7837L13.241 17.8444ZM7.21629 9.69832C6.9234 9.40543 6.44852 9.40543 6.15563 9.69832C5.86274 9.99122 5.86274 10.4661 6.15563 10.759L7.21629 9.69832ZM16.073 16.073C16.3659 15.7801 16.3659 15.3053 16.073 15.0124C15.7801 14.7195 15.3053 14.7195 15.0124 15.0124L16.073 16.073ZM18.4676 11.5559C18.1759 11.8499 18.1777 12.3248 18.4718 12.6165C18.7658 12.9083 19.2407 12.9064 19.5324 12.6124L18.4676 11.5559ZM6.03539 11.9399L11.9399 6.03539L10.8792 4.97473L4.97473 10.8792L6.03539 11.9399ZM6.03539 17.9646C5.18538 17.1146 4.60235 16.5293 4.22253 16.0315C3.85592 15.551 3.75 15.2411 3.75 14.9522H2.25C2.25 15.701 2.56159 16.3274 3.03 16.9414C3.48521 17.538 4.1547 18.2052 4.97473 19.0253L6.03539 17.9646ZM4.97473 10.8792C4.1547 11.6993 3.48521 12.3665 3.03 12.9631C2.56159 13.577 2.25 14.2035 2.25 14.9522H3.75C3.75 14.6633 3.85592 14.3535 4.22253 13.873C4.60235 13.3752 5.18538 12.7899 6.03539 11.9399L4.97473 10.8792ZM12.0601 17.9646C11.2101 18.8146 10.6248 19.3977 10.127 19.7775C9.64651 20.1441 9.33665 20.25 9.04776 20.25V21.75C9.79649 21.75 10.423 21.4384 11.0369 20.97C11.6335 20.5148 12.3008 19.8453 13.1208 19.0253L12.0601 17.9646ZM4.97473 19.0253C5.79476 19.8453 6.46201 20.5148 7.05863 20.97C7.67256 21.4384 8.29902 21.75 9.04776 21.75V20.25C8.75886 20.25 8.449 20.1441 7.9685 19.7775C7.47069 19.3977 6.88541 18.8146 6.03539 17.9646L4.97473 19.0253ZM17.9646 6.03539C18.8146 6.88541 19.3977 7.47069 19.7775 7.9685C20.1441 8.449 20.25 8.75886 20.25 9.04776H21.75C21.75 8.29902 21.4384 7.67256 20.97 7.05863C20.5148 6.46201 19.8453 5.79476 19.0253 4.97473L17.9646 6.03539ZM19.0253 4.97473C18.2052 4.1547 17.538 3.48521 16.9414 3.03C16.3274 2.56159 15.701 2.25 14.9522 2.25V3.75C15.2411 3.75 15.551 3.85592 16.0315 4.22253C16.5293 4.60235 17.1146 5.18538 17.9646 6.03539L19.0253 4.97473ZM11.9399 6.03539C12.7899 5.18538 13.3752 4.60235 13.873 4.22253C14.3535 3.85592 14.6633 3.75 14.9522 3.75V2.25C14.2035 2.25 13.577 2.56159 12.9631 3.03C12.3665 3.48521 11.6993 4.1547 10.8792 4.97473L11.9399 6.03539ZM14.3017 16.7837L7.21629 9.69832L6.15563 10.759L13.241 17.8444L14.3017 16.7837ZM15.0124 15.0124L12.0601 17.9646L13.1208 19.0253L16.073 16.073L15.0124 15.0124ZM19.5324 12.6124C20.1932 11.9464 20.7384 11.3759 21.114 10.8404C21.5023 10.2869 21.75 9.71511 21.75 9.04776H20.25C20.25 9.30755 20.1644 9.58207 19.886 9.979C19.5949 10.394 19.1401 10.8781 18.4676 11.5559L19.5324 12.6124Z" fill="#1C274C"></path>
+                        <path d="M9 21H21" stroke="#1C274C" stroke-width="1.44" stroke-linecap="round"></path>
+                    </g>
+                    <g id="SVGRepo_iconCarrier">
+                        <path d="M5.50506 11.4096L6.03539 11.9399L5.50506 11.4096ZM3 14.9522H2.25H3ZM12.5904 18.4949L12.0601 17.9646L12.5904 18.4949ZM9.04776 21V21.75V21ZM11.4096 5.50506L10.8792 4.97473L11.4096 5.50506ZM13.241 17.8444C13.5339 18.1373 14.0088 18.1373 14.3017 17.8444C14.5946 17.5515 14.5946 17.0766 14.3017 16.7837L13.241 17.8444ZM7.21629 9.69832C6.9234 9.40543 6.44852 9.40543 6.15563 9.69832C5.86274 9.99122 5.86274 10.4661 6.15563 10.759L7.21629 9.69832ZM16.073 16.073C16.3659 15.7801 16.3659 15.3053 16.073 15.0124C15.7801 14.7195 15.3053 14.7195 15.0124 15.0124L16.073 16.073ZM18.4676 11.5559C18.1759 11.8499 18.1777 12.3248 18.4718 12.6165C18.7658 12.9083 19.2407 12.9064 19.5324 12.6124L18.4676 11.5559ZM6.03539 11.9399L11.9399 6.03539L10.8792 4.97473L4.97473 10.8792L6.03539 11.9399ZM6.03539 17.9646C5.18538 17.1146 4.60235 16.5293 4.22253 16.0315C3.85592 15.551 3.75 15.2411 3.75 14.9522H2.25C2.25 15.701 2.56159 16.3274 3.03 16.9414C3.48521 17.538 4.1547 18.2052 4.97473 19.0253L6.03539 17.9646ZM4.97473 10.8792C4.1547 11.6993 3.48521 12.3665 3.03 12.9631C2.56159 13.577 2.25 14.2035 2.25 14.9522H3.75C3.75 14.6633 3.85592 14.3535 4.22253 13.873C4.60235 13.3752 5.18538 12.7899 6.03539 11.9399L4.97473 10.8792ZM12.0601 17.9646C11.2101 18.8146 10.6248 19.3977 10.127 19.7775C9.64651 20.1441 9.33665 20.25 9.04776 20.25V21.75C9.79649 21.75 10.423 21.4384 11.0369 20.97C11.6335 20.5148 12.3008 19.8453 13.1208 19.0253L12.0601 17.9646ZM4.97473 19.0253C5.79476 19.8453 6.46201 20.5148 7.05863 20.97C7.67256 21.4384 8.29902 21.75 9.04776 21.75V20.25C8.75886 20.25 8.449 20.1441 7.9685 19.7775C7.47069 19.3977 6.88541 18.8146 6.03539 17.9646L4.97473 19.0253ZM17.9646 6.03539C18.8146 6.88541 19.3977 7.47069 19.7775 7.9685C20.1441 8.449 20.25 8.75886 20.25 9.04776H21.75C21.75 8.29902 21.4384 7.67256 20.97 7.05863C20.5148 6.46201 19.8453 5.79476 19.0253 4.97473L17.9646 6.03539ZM19.0253 4.97473C18.2052 4.1547 17.538 3.48521 16.9414 3.03C16.3274 2.56159 15.701 2.25 14.9522 2.25V3.75C15.2411 3.75 15.551 3.85592 16.0315 4.22253C16.5293 4.60235 17.1146 5.18538 17.9646 6.03539L19.0253 4.97473ZM11.9399 6.03539C12.7899 5.18538 13.3752 4.60235 13.873 4.22253C14.3535 3.85592 14.6633 3.75 14.9522 3.75V2.25C14.2035 2.25 13.577 2.56159 12.9631 3.03C12.3665 3.48521 11.6993 4.1547 10.8792 4.97473L11.9399 6.03539ZM14.3017 16.7837L7.21629 9.69832L6.15563 10.759L13.241 17.8444L14.3017 16.7837ZM15.0124 15.0124L12.0601 17.9646L13.1208 19.0253L16.073 16.073L15.0124 15.0124ZM19.5324 12.6124C20.1932 11.9464 20.7384 11.3759 21.114 10.8404C21.5023 10.2869 21.75 9.71511 21.75 9.04776H20.25C20.25 9.30755 20.1644 9.58207 19.886 9.979C19.5949 10.394 19.1401 10.8781 18.4676 11.5559L19.5324 12.6124Z" fill="#1C274C"></path>
+                        <path d="M9 21H21" stroke="#1C274C" stroke-width="1.44" stroke-linecap="round"></path>
+                    </g>
+                </svg>
+		</span>
+	`;
+
+	button.addEventListener("click", async () => {
+		const state = getCommentDraftState(editorBody);
+		const ticketId = state.ticketId || getCurrentTicketId(editorBody.ownerDocument);
+		if (!ticketId) return;
+
+		try {
+			state.restoreInProgress = true;
+			setCommentEditorHtml(editorBody, "");
+			state.lastSavedHtml = "";
+			await clearCommentDraft(ticketId);
+		} catch (error) {
+			console.error("Could not erase comment draft", error);
+		} finally {
+			state.restoreInProgress = false;
+		}
+	});
+
+	group.appendChild(button);
+	return group;
+}
+
+function ensureEraseDraftToolbar(editorBody) {
+	const toolbarDoc = getCommentEditorHostDocument();
+	const toolbar = toolbarDoc?.querySelector(".tox-toolbar__primary");
+	if (!toolbar || toolbar.querySelector('[data-trs-erase-draft-group="true"]')) return;
+
+	const eraseGroup = createEraseDraftToolbarGroup(editorBody);
+	const sourceButton = toolbar.querySelector('button[title="Source code"], button[aria-label="Source code"]');
+	const sourceGroup = sourceButton?.closest(".tox-toolbar__group");
+
+	if (sourceGroup?.parentNode) {
+		sourceGroup.insertAdjacentElement("afterend", eraseGroup);
+	} else {
+		toolbar.appendChild(eraseGroup);
+	}
+}
+
+function createInferTimeToolbarGroup() {
+	const toolbarDoc = getCommentEditorHostDocument();
+	const group = toolbarDoc.createElement("div");
+	group.className = "tox-toolbar__group";
+	group.dataset.trsInferTimeGroup = "true";
+	group.setAttribute("title", "");
+	group.setAttribute("role", "toolbar");
+	group.setAttribute("data-alloy-tabstop", "true");
+	group.tabIndex = -1;
+
+	const button = toolbarDoc.createElement("button");
+	button.type = "button";
+	button.className = "tox-tbtn";
+	button.setAttribute("aria-label", "Infer time");
+	button.setAttribute("title", "Infer time");
+	button.setAttribute("aria-disabled", "false");
+	button.tabIndex = -1;
+	button.dataset.trsInferTimeButton = "true";
+	button.innerHTML = `
+		<span class="tox-icon tox-tbtn__icon-wrap">
+			<span class="tox-icon tox-tbtn__icon-wrap">
+				<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" width="18" height="18" focusable="false" style="fill: none;">
+					<path d="M5.06152 12C5.55362 8.05369 8.92001 5 12.9996 5C17.4179 5 20.9996 8.58172 20.9996 13C20.9996 17.4183 17.4179 21 12.9996 21H8M13 13V9M11 3H15M3 15H8M5 18H10" stroke="#222f3e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+				</svg>
+			</span>
+		</span>
+	`;
+
+	button.addEventListener("click", async () => {
+		await runFillTimeFromCommentEditor();
+	});
+
+	group.appendChild(button);
+	return group;
+}
+
+function ensureCommentToolbarButtons(editorBody) {
+	const toolbarDoc = getCommentEditorHostDocument();
+	const toolbar = toolbarDoc?.querySelector(".tox-toolbar__primary");
+	if (!toolbar) return;
+
+	const sourceButton = toolbar.querySelector('button[title="Source code"], button[aria-label="Source code"]');
+	const sourceGroup = sourceButton?.closest(".tox-toolbar__group");
+
+	if (!toolbar.querySelector('[data-trs-infer-time-group="true"]')) {
+		const inferGroup = createInferTimeToolbarGroup();
+		if (sourceGroup?.parentNode) {
+			sourceGroup.insertAdjacentElement("afterend", inferGroup);
+		} else {
+			toolbar.appendChild(inferGroup);
+		}
+	}
+
+	if (!toolbar.querySelector('[data-trs-erase-draft-group="true"]')) {
+		const eraseGroup = createEraseDraftToolbarGroup(editorBody);
+		const inferGroup = toolbar.querySelector('[data-trs-infer-time-group="true"]');
+		if (inferGroup?.parentNode) {
+			inferGroup.insertAdjacentElement("afterend", eraseGroup);
+		} else if (sourceGroup?.parentNode) {
+			sourceGroup.insertAdjacentElement("afterend", eraseGroup);
+		} else {
+			toolbar.appendChild(eraseGroup);
+		}
+	}
+}
+
+function bindCommentDraftListeners(editorBody) {
+	const state = getCommentDraftState(editorBody);
+	if (state.listenersBound) return;
+
+	const saveHandler = () => scheduleCommentDraftSave(editorBody);
+	editorBody.addEventListener("input", saveHandler);
+	editorBody.addEventListener("keyup", saveHandler);
+	editorBody.addEventListener("paste", saveHandler);
+	editorBody.addEventListener("cut", saveHandler);
+
+	state.bodyObserver = new MutationObserver(() => {
+		scheduleCommentDraftSave(editorBody);
+	});
+	state.bodyObserver.observe(editorBody, {
+		childList: true,
+		subtree: true,
+		characterData: true
+	});
+
+	const toolbarDoc = getCommentEditorHostDocument();
+	const toolbarRoot = toolbarDoc?.body || toolbarDoc?.documentElement;
+	if (toolbarRoot) {
+		state.toolbarObserver = new MutationObserver(() => {
+			ensureCommentToolbarButtons(editorBody);
+		});
+		state.toolbarObserver.observe(toolbarRoot, {
+			childList: true,
+			subtree: true
+		});
+	}
+
+	state.listenersBound = true;
+}
+
+function isAddCommentSubmitControl(control) {
+	if (!(control instanceof Element)) return false;
+
+	const summary = [
+		control.id,
+		control.getAttribute("name"),
+		control.getAttribute("title"),
+		control.getAttribute("aria-label"),
+		control.getAttribute("value"),
+		control.textContent
+	].filter(Boolean).join(" ").toLowerCase();
+
+	if (!summary) return false;
+	if (summary.includes("erase draft") || summary.includes("fill time") || summary.includes("template")) return false;
+
+	return summary.includes("add comment")
+		|| summary.includes("save comment")
+		|| summary.includes("post comment")
+		|| summary.includes("submit comment");
+}
+
+function bindAddCommentSubmitClear(editorBody) {
+	const store = getCommentDraftStore();
+	const roots = [
+		editorBody.ownerDocument,
+		findElement("#divEditHDEntryComment_IO")?.closest(".ui-dialog"),
+		getTicketDocument(editorBody.ownerDocument),
+		document
+	].filter(Boolean);
+
+	for (const root of roots) {
+		const controls = root.querySelectorAll("button, input[type='button'], input[type='submit'], a");
+		for (const control of controls) {
+			if (!isAddCommentSubmitControl(control) || store.submitBindings.has(control)) continue;
+
+			control.addEventListener("click", async () => {
+				const state = getCommentDraftState(editorBody);
+				const ticketId = state.ticketId || getCurrentTicketId(editorBody.ownerDocument);
+				if (!ticketId) return;
+
+				try {
+					if (state.saveTimerId) {
+						clearTimeout(state.saveTimerId);
+						state.saveTimerId = 0;
+					}
+					state.lastSavedHtml = "";
+					await clearCommentDraft(ticketId);
+				} catch (error) {
+					console.error("Could not clear comment draft on submit", error);
+				}
+			});
+
+			store.submitBindings.add(control);
+		}
+	}
+}
+
+async function ensureCommentDraftFeatures() {
+	const editorBody = getCommentEditorBody(false);
+	if (!editorBody) return false;
+
+	const state = getCommentDraftState(editorBody);
+	const ticketId = getCurrentTicketId(editorBody.ownerDocument);
+	resetCommentDraftStateForTicket(state, ticketId);
+
+	bindCommentDraftListeners(editorBody);
+	ensureCommentToolbarButtons(editorBody);
+	bindAddCommentSubmitClear(editorBody);
+	await restoreCommentDraftForEditor(editorBody);
+	return true;
+}
+
+function scheduleCommentDraftFeatureBinding() {
+	const delays = [0, 150, 500, 1200];
+	for (const delay of delays) {
+		window.setTimeout(() => {
+			ensureCommentDraftFeatures().catch(error => {
+				console.error("Could not bind comment draft features", error);
+			});
+		}, delay);
+	}
 }
 
 function applyTemplateToCommentEditor(template, templateId = "") {
@@ -1249,6 +1696,7 @@ function applyTemplateToCommentEditor(template, templateId = "") {
 	state.appliedContent = result;
 	state.cleanTemplateApplied = true;
 	saveEditorSelection(tiny);
+	scheduleCommentDraftSave(tiny);
 	return tiny;
 }
 
@@ -1429,6 +1877,34 @@ async function estimateDuration(input) {
 	return null; // No fallback for duration — field left unchanged
 }
 
+async function runFillTimeFromCommentEditor() {
+	const iframe = findElement("#txt_ed_comment_ifr");
+	if (!iframe) return;
+
+	const doc = iframe.contentDocument || iframe.contentWindow.document;
+	const tiny = doc?.querySelector("#tinymce");
+	if (!tiny) { alert("TinyMCE not found."); return; }
+
+	const summaryField = findElement("#txt_tr_comments");
+	const durationField = findElement("#txt_tr_duration");
+	if (!summaryField) return;
+
+	const commentContent = tiny.innerHTML;
+	const stopSpinner = startLoadingSpinner(summaryField, durationField);
+
+	try {
+		const [summary, duration] = await Promise.all([
+			generateFillTimeSummary(commentContent),
+			durationField ? estimateDuration(commentContent) : Promise.resolve(null)
+		]);
+
+		stopSpinner(summary ?? "", duration);
+	} catch (err) {
+		stopSpinner("", null);
+		console.error("Fill time AI failed:", err);
+	}
+}
+
 function createSingleLineSummaryButton(label, id) {
 	const button = document.createElement("button");
 	button.id = id;
@@ -1437,30 +1913,7 @@ function createSingleLineSummaryButton(label, id) {
 	button.textContent = label;
 
 	button.addEventListener("click", async () => {
-		const iframe = findElement("#txt_ed_comment_ifr");
-		if (!iframe) return;
-		const doc = iframe.contentDocument || iframe.contentWindow.document;
-		const tiny = doc?.querySelector("#tinymce");
-		if (!tiny) { alert("TinyMCE not found."); return; }
-
-		const summaryField = findElement("#txt_tr_comments");
-		const durationField = findElement("#txt_tr_duration");
-		if (!summaryField) return;
-
-		const commentContent = tiny.innerHTML;
-		const stopSpinner = startLoadingSpinner(summaryField, durationField);
-
-		try {
-			const [summary, duration] = await Promise.all([
-				generateFillTimeSummary(commentContent),
-				durationField ? estimateDuration(commentContent) : Promise.resolve(null)
-			]);
-
-			stopSpinner(summary ?? "", duration);
-		} catch (err) {
-			stopSpinner("", null);
-			console.error("Fill time AI failed:", err);
-		}
+		await runFillTimeFromCommentEditor();
 	});
 
 	return button;
@@ -1509,11 +1962,6 @@ function createTemplateDropdown() {
 }
 
 function addTemplateButtons(container) {
-	if (!container.querySelector("#single-line-summary")) {
-		const btn1 = createSingleLineSummaryButton("Fill time", "single-line-summary");
-		container.appendChild(btn1);
-	}
-
 	if (!container.querySelector("#template-picker")) {
 		container.appendChild(createTemplateDropdown());
 	}
@@ -2050,6 +2498,7 @@ async function watchCommentEditor() {
 		const editors = root.querySelectorAll("#divEditHDEntryComment_IO");
 		for (const editor of editors) {
 			addTemplateButtons(editor);
+			scheduleCommentDraftFeatureBinding();
 		}
 	};
 
