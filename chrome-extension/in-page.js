@@ -1,8 +1,8 @@
 if (window.__trsOnSteroidsInitialized) {
-	console.debug("TRS on Steroids already initialized in this frame, skipping bootstrap.");
+	logInfo("bootstrap-skipped", { reason: "already-initialized" });
 } else {
 	window.__trsOnSteroidsInitialized = true;
-	console.log("in-page.js loaded");
+	logInfo("bootstrap-loaded");
 
 	const sharedWindow = getSharedWindow();
 	sharedWindow.ticketData = sharedWindow.ticketData || createEmptyTicketData();
@@ -18,6 +18,67 @@ if (window.__trsOnSteroidsInitialized) {
 	const TEMPLATE_PLACEHOLDER_KEYS = Object.freeze(Object.keys(createEmptyTicketData()));
 	const TEMPLATE_EXPRESSION_KEYS = Object.freeze(["todayPlusDays(3)"]);
 	const TEMPLATE_MANAGER_OVERLAY_ID = "trs-template-manager-overlay";
+	const LOG_PREFIX = "[TRS]";
+
+	function summarizeError(error) {
+		if (!error) return null;
+		if (error instanceof Error) {
+			return {
+				name: error.name,
+				message: error.message
+			};
+		}
+
+		return {
+			message: String(error)
+		};
+	}
+
+	function logInfo(event, details) {
+		if (details === undefined) {
+			console.info(`${LOG_PREFIX} ${event}`);
+			return;
+		}
+
+		console.info(`${LOG_PREFIX} ${event}`, details);
+	}
+
+	function logWarn(event, details) {
+		if (details === undefined) {
+			console.warn(`${LOG_PREFIX} ${event}`);
+			return;
+		}
+
+		console.warn(`${LOG_PREFIX} ${event}`, details);
+	}
+
+	function logError(event, error, details = {}) {
+		console.error(`${LOG_PREFIX} ${event}`, {
+			...details,
+			error: summarizeError(error)
+		});
+	}
+
+	function getHtmlLogDetails(html) {
+		const normalized = normalizeRichText(html || "");
+		return {
+			hasContent: Boolean(normalized),
+			contentLength: normalized.length
+		};
+	}
+
+	function summarizeControl(control) {
+		if (!(control instanceof Element)) return "";
+
+		return [
+			control.id,
+			control.getAttribute("name"),
+			control.getAttribute("title"),
+			control.getAttribute("aria-label"),
+			control.getAttribute("value"),
+			control.textContent?.trim()
+		].filter(Boolean).join(" | ");
+	}
 
 
 // ------------------------------------------
@@ -156,7 +217,7 @@ function notifyTemplateSubscribers() {
 		try {
 			listener(getAllTemplates());
 		} catch (error) {
-			console.error("Template subscriber failed", error);
+			logError("template-subscriber-failed", error);
 		}
 	}
 }
@@ -241,6 +302,10 @@ function bindTemplateStorageListener() {
 		if (areaName !== "sync" || !changes[TEMPLATE_STORAGE_KEY]) return;
 
 		templateStore.userTemplates = normalizeStoredTemplates(changes[TEMPLATE_STORAGE_KEY].newValue);
+		logInfo("template-storage-updated", {
+			action: "sync-change",
+			templateCount: templateStore.userTemplates.length
+		});
 		notifyTemplateSubscribers();
 	});
 
@@ -259,6 +324,10 @@ async function initializeTemplates() {
 
 		templateStore.defaultTemplates = defaultTemplates;
 		templateStore.userTemplates = normalizeStoredTemplates(storedItems[TEMPLATE_STORAGE_KEY]);
+		logInfo("templates-initialized", {
+			defaultTemplateCount: templateStore.defaultTemplates.length,
+			userTemplateCount: templateStore.userTemplates.length
+		});
 		bindTemplateStorageListener();
 		notifyTemplateSubscribers();
 		return getAllTemplates();
@@ -291,6 +360,10 @@ async function saveUserTemplates(nextTemplates) {
 
 	const templateStore = getTemplateStore();
 	templateStore.userTemplates = normalizedTemplates;
+	logInfo("templates-saved", {
+		action: "sync-set",
+		templateCount: normalizedTemplates.length
+	});
 	notifyTemplateSubscribers();
 }
 
@@ -449,14 +522,18 @@ function closeTemplateManager() {
 
 	overlay.__unsubscribeTemplates?.();
 	overlay.remove();
+	logInfo("template-manager-closed");
 }
 
 function openTemplateManager() {
 	const existingOverlay = document.getElementById(TEMPLATE_MANAGER_OVERLAY_ID);
 	if (existingOverlay) {
 		existingOverlay.style.display = "flex";
+		logInfo("template-manager-opened", { action: "reuse-existing-overlay" });
 		return;
 	}
+
+	logInfo("template-manager-opened", { action: "create-overlay" });
 
 	const overlay = document.createElement("div");
 	overlay.id = TEMPLATE_MANAGER_OVERLAY_ID;
@@ -728,6 +805,9 @@ function openTemplateManager() {
 
 	templateList.addEventListener("change", () => {
 		setStatus("");
+		logInfo("template-manager-selection-changed", {
+			templateId: templateList.value || ""
+		});
 		loadIntoForm(templateList.value);
 	});
 
@@ -735,6 +815,7 @@ function openTemplateManager() {
 		setStatus("");
 		resetForm();
 		nameInput.focus();
+		logInfo("template-manager-new-clicked");
 	});
 
 	saveButton.addEventListener("click", async () => {
@@ -773,8 +854,15 @@ function openTemplateManager() {
 			currentTemplateId = nextTemplate.id;
 			renderTemplateList();
 			setStatus("Template saved to sync storage.");
+			logInfo("template-manager-saved-template", {
+				templateId: nextTemplate.id,
+				templateLabel: nextTemplate.label
+			});
 		} catch (error) {
-			console.error("Could not save template", error);
+			logError("template-manager-save-failed", error, {
+				templateId: nextTemplate.id,
+				templateLabel: nextTemplate.label
+			});
 			setStatus("Could not save template.", true);
 		}
 	});
@@ -784,12 +872,18 @@ function openTemplateManager() {
 
 		try {
 			const templates = getUserTemplates().filter(template => template.id !== currentTemplateId);
+			const deletedTemplateId = currentTemplateId;
 			await saveUserTemplates(templates);
 			resetForm();
 			renderTemplateList();
 			setStatus("Template deleted.");
+			logInfo("template-manager-deleted-template", {
+				templateId: deletedTemplateId
+			});
 		} catch (error) {
-			console.error("Could not delete template", error);
+			logError("template-manager-delete-failed", error, {
+				templateId: currentTemplateId
+			});
 			setStatus("Could not delete template.", true);
 		}
 	});
@@ -800,9 +894,18 @@ function openTemplateManager() {
 		closeTemplateManager();
 	}
 
-	closeButton.addEventListener("click", closeAndCleanup);
-	titleCloseButton.addEventListener("click", closeAndCleanup);
-	overlay.addEventListener("click", closeAndCleanup);
+	closeButton.addEventListener("click", () => {
+		logInfo("template-manager-close-clicked", { action: "footer-button" });
+		closeAndCleanup();
+	});
+	titleCloseButton.addEventListener("click", () => {
+		logInfo("template-manager-close-clicked", { action: "titlebar-button" });
+		closeAndCleanup();
+	});
+	overlay.addEventListener("click", () => {
+		logInfo("template-manager-close-clicked", { action: "overlay-click" });
+		closeAndCleanup();
+	});
 
 	overlay.__unsubscribeTemplates = subscribeToTemplates(renderTemplateList);
 
@@ -1349,6 +1452,7 @@ function setCommentEditorHtml(editorBody, html) {
 function resetCommentDraftStateForTicket(state, ticketId) {
 	if (state.ticketId === ticketId) return;
 
+	const previousTicketId = state.ticketId;
 	if (state.saveTimerId) {
 		clearTimeout(state.saveTimerId);
 		state.saveTimerId = 0;
@@ -1358,68 +1462,135 @@ function resetCommentDraftStateForTicket(state, ticketId) {
 	state.restoreAttempted = false;
 	state.restoreInProgress = false;
 	state.lastSavedHtml = "";
+	logInfo("comment-draft-state-reset", {
+		previousTicketId,
+		ticketId: ticketId || "",
+		reason: previousTicketId ? "ticket-switched" : "initial-bind"
+	});
 }
 
 async function persistCommentDraftForEditor(editorBody) {
 	const state = getCommentDraftState(editorBody);
-	if (state.restoreInProgress) return;
+	if (state.restoreInProgress) {
+		logInfo("comment-draft-save-skipped", {
+			ticketId: state.ticketId || "",
+			reason: "restore-in-progress"
+		});
+		return;
+	}
 
 	const ticketId = state.ticketId || getCurrentTicketId(editorBody.ownerDocument);
-	if (!ticketId) return;
+	if (!ticketId) {
+		logWarn("comment-draft-save-skipped", { reason: "missing-ticket-id" });
+		return;
+	}
 
 	const html = getCommentEditorHtml(editorBody);
 	if (!hasMeaningfulEditorContent(html)) {
 		if (state.lastSavedHtml) {
 			await clearCommentDraft(ticketId);
 			state.lastSavedHtml = "";
+			logInfo("comment-draft-cleared", {
+				ticketId,
+				action: "autosave-empty-editor"
+			});
 		}
+		logInfo("comment-draft-save-skipped", {
+			ticketId,
+			reason: "empty-editor",
+			...getHtmlLogDetails(html)
+		});
 		return;
 	}
 
-	if (html === state.lastSavedHtml) return;
+	if (html === state.lastSavedHtml) {
+		logInfo("comment-draft-save-skipped", {
+			ticketId,
+			reason: "unchanged-html",
+			...getHtmlLogDetails(html)
+		});
+		return;
+	}
 
 	await saveCommentDraft(ticketId, html);
 	state.lastSavedHtml = html;
+	logInfo("comment-draft-saved", {
+		ticketId,
+		...getHtmlLogDetails(html)
+	});
 }
 
 function scheduleCommentDraftSave(editorBody) {
 	const state = getCommentDraftState(editorBody);
-	if (state.restoreInProgress) return;
+	if (state.restoreInProgress) {
+		logInfo("comment-draft-save-schedule-skipped", {
+			ticketId: state.ticketId || "",
+			reason: "restore-in-progress"
+		});
+		return;
+	}
 
 	if (state.saveTimerId) {
 		clearTimeout(state.saveTimerId);
 	}
+	logInfo("comment-draft-save-scheduled", {
+		ticketId: state.ticketId || getCurrentTicketId(editorBody.ownerDocument) || "",
+		delayMs: COMMENT_DRAFT_SAVE_DELAY_MS
+	});
 
 	state.saveTimerId = window.setTimeout(async () => {
 		state.saveTimerId = 0;
 		try {
 			await persistCommentDraftForEditor(editorBody);
 		} catch (error) {
-			console.error("Could not persist comment draft", error);
+			logError("comment-draft-save-failed", error, {
+				ticketId: state.ticketId || ""
+			});
 		}
 	}, COMMENT_DRAFT_SAVE_DELAY_MS);
 }
 
 async function restoreCommentDraftForEditor(editorBody) {
 	const state = getCommentDraftState(editorBody);
-	if (state.restoreAttempted) return;
+	if (state.restoreAttempted) {
+		logInfo("comment-draft-restore-skipped", {
+			ticketId: state.ticketId || "",
+			reason: "already-attempted"
+		});
+		return;
+	}
 
 	const ticketId = getCurrentTicketId(editorBody.ownerDocument);
 	state.ticketId = ticketId;
 	state.restoreAttempted = true;
 
-	if (!ticketId) return;
+	if (!ticketId) {
+		logWarn("comment-draft-restore-skipped", { reason: "missing-ticket-id" });
+		return;
+	}
 
 	try {
+		logInfo("comment-draft-restore-started", { ticketId });
 		const draftHtml = await loadCommentDraft(ticketId);
 		state.lastSavedHtml = draftHtml || "";
-		if (!draftHtml) return;
+		if (!draftHtml) {
+			logInfo("comment-draft-restore-finished", {
+				ticketId,
+				restored: false
+			});
+			return;
+		}
 
 		state.restoreInProgress = true;
 		setCommentEditorHtml(editorBody, draftHtml);
 		saveEditorSelection(editorBody);
+		logInfo("comment-draft-restore-finished", {
+			ticketId,
+			restored: true,
+			...getHtmlLogDetails(draftHtml)
+		});
 	} catch (error) {
-		console.error("Could not restore comment draft", error);
+		logError("comment-draft-restore-failed", error, { ticketId });
 	} finally {
 		state.restoreInProgress = false;
 	}
@@ -1463,15 +1634,20 @@ function createEraseDraftToolbarGroup(editorBody) {
 	button.addEventListener("click", async () => {
 		const state = getCommentDraftState(editorBody);
 		const ticketId = state.ticketId || getCurrentTicketId(editorBody.ownerDocument);
-		if (!ticketId) return;
+		if (!ticketId) {
+			logWarn("comment-draft-erase-skipped", { reason: "missing-ticket-id" });
+			return;
+		}
 
 		try {
+			logInfo("comment-draft-erase-clicked", { ticketId });
 			state.restoreInProgress = true;
 			setCommentEditorHtml(editorBody, "");
 			state.lastSavedHtml = "";
 			await clearCommentDraft(ticketId);
+			logInfo("comment-draft-erased", { ticketId });
 		} catch (error) {
-			console.error("Could not erase comment draft", error);
+			logError("comment-draft-erase-failed", error, { ticketId });
 		} finally {
 			state.restoreInProgress = false;
 		}
@@ -1487,6 +1663,7 @@ function ensureEraseDraftToolbar(editorBody) {
 	if (!toolbar || toolbar.querySelector('[data-trs-erase-draft-group="true"]')) return;
 
 	const eraseGroup = createEraseDraftToolbarGroup(editorBody);
+	logInfo("comment-toolbar-button-added", { action: "erase-draft" });
 	const sourceButton = toolbar.querySelector('button[title="Source code"], button[aria-label="Source code"]');
 	const sourceGroup = sourceButton?.closest(".tox-toolbar__group");
 
@@ -1543,6 +1720,7 @@ function ensureCommentToolbarButtons(editorBody) {
 
 	if (!toolbar.querySelector('[data-trs-infer-time-group="true"]')) {
 		const inferGroup = createInferTimeToolbarGroup();
+		logInfo("comment-toolbar-button-added", { action: "infer-time" });
 		if (sourceGroup?.parentNode) {
 			sourceGroup.insertAdjacentElement("afterend", inferGroup);
 		} else {
@@ -1552,6 +1730,7 @@ function ensureCommentToolbarButtons(editorBody) {
 
 	if (!toolbar.querySelector('[data-trs-erase-draft-group="true"]')) {
 		const eraseGroup = createEraseDraftToolbarGroup(editorBody);
+		logInfo("comment-toolbar-button-added", { action: "erase-draft" });
 		const inferGroup = toolbar.querySelector('[data-trs-infer-time-group="true"]');
 		if (inferGroup?.parentNode) {
 			inferGroup.insertAdjacentElement("afterend", eraseGroup);
@@ -1595,6 +1774,9 @@ function bindCommentDraftListeners(editorBody) {
 	}
 
 	state.listenersBound = true;
+	logInfo("comment-draft-listeners-bound", {
+		ticketId: state.ticketId || getCurrentTicketId(editorBody.ownerDocument) || ""
+	});
 }
 
 function isAddCommentSubmitControl(control) {
@@ -1635,7 +1817,17 @@ function bindAddCommentSubmitClear(editorBody) {
 			control.addEventListener("click", async () => {
 				const state = getCommentDraftState(editorBody);
 				const ticketId = state.ticketId || getCurrentTicketId(editorBody.ownerDocument);
-				if (!ticketId) return;
+				logInfo("comment-submit-clicked", {
+					ticketId: ticketId || "",
+					controlSummary: summarizeControl(control)
+				});
+				if (!ticketId) {
+					logWarn("comment-submit-draft-clear-skipped", {
+						reason: "missing-ticket-id",
+						controlSummary: summarizeControl(control)
+					});
+					return;
+				}
 
 				try {
 					if (state.saveTimerId) {
@@ -1644,37 +1836,53 @@ function bindAddCommentSubmitClear(editorBody) {
 					}
 					state.lastSavedHtml = "";
 					await clearCommentDraft(ticketId);
+					logInfo("comment-submit-draft-cleared", {
+						ticketId,
+						controlSummary: summarizeControl(control)
+					});
 				} catch (error) {
-					console.error("Could not clear comment draft on submit", error);
+					logError("comment-submit-draft-clear-failed", error, {
+						ticketId,
+						controlSummary: summarizeControl(control)
+					});
 				}
 			});
 
 			store.submitBindings.add(control);
+			logInfo("comment-submit-control-bound", {
+				controlSummary: summarizeControl(control)
+			});
 		}
 	}
 }
 
 async function ensureCommentDraftFeatures() {
 	const editorBody = getCommentEditorBody(false);
-	if (!editorBody) return false;
+	if (!editorBody) {
+		logWarn("comment-editor-unavailable", { reason: "tinymce-body-missing" });
+		return false;
+	}
 
 	const state = getCommentDraftState(editorBody);
 	const ticketId = getCurrentTicketId(editorBody.ownerDocument);
+	logInfo("comment-editor-ready", { ticketId: ticketId || "" });
 	resetCommentDraftStateForTicket(state, ticketId);
 
 	bindCommentDraftListeners(editorBody);
 	ensureCommentToolbarButtons(editorBody);
 	bindAddCommentSubmitClear(editorBody);
 	await restoreCommentDraftForEditor(editorBody);
+	logInfo("comment-draft-features-ready", { ticketId: state.ticketId || ticketId || "" });
 	return true;
 }
 
 function scheduleCommentDraftFeatureBinding() {
 	const delays = [0, 150, 500, 1200];
+	logInfo("comment-draft-feature-binding-scheduled", { delays });
 	for (const delay of delays) {
 		window.setTimeout(() => {
 			ensureCommentDraftFeatures().catch(error => {
-				console.error("Could not bind comment draft features", error);
+				logError("comment-draft-feature-binding-failed", error, { delay });
 			});
 		}, delay);
 	}
@@ -1697,6 +1905,13 @@ function applyTemplateToCommentEditor(template, templateId = "") {
 	state.cleanTemplateApplied = true;
 	saveEditorSelection(tiny);
 	scheduleCommentDraftSave(tiny);
+	const templateMeta = getTemplateById(templateId);
+	logInfo("comment-template-applied", {
+		templateId,
+		templateLabel: templateMeta?.label || "",
+		ticketId: getCurrentTicketId(tiny.ownerDocument) || "",
+		...getHtmlLogDetails(result)
+	});
 	return tiny;
 }
 
@@ -1736,16 +1951,26 @@ function renderApplyTemplateOptions(select) {
 
 async function saveCurrentEditorContentAsTemplate() {
 	const tiny = getCommentEditorBody();
-	if (!tiny) return false;
+	if (!tiny) {
+		logWarn("comment-template-save-current-skipped", { reason: "editor-unavailable" });
+		return false;
+	}
 
 	const content = tiny.innerHTML.trim();
 	if (!content) {
+		logWarn("comment-template-save-current-skipped", {
+			reason: "empty-editor",
+			...getHtmlLogDetails(content)
+		});
 		alert("There is no current editor content to save as a template.");
 		return false;
 	}
 
 	const label = window.prompt("Template name");
-	if (!label) return false;
+	if (!label) {
+		logInfo("comment-template-save-current-cancelled", { reason: "prompt-cancelled" });
+		return false;
+	}
 
 	const nextTemplate = {
 		id: createUserTemplateId(label),
@@ -1754,6 +1979,7 @@ async function saveCurrentEditorContentAsTemplate() {
 	};
 
 	if (!nextTemplate.label) {
+		logWarn("comment-template-save-current-skipped", { reason: "empty-label" });
 		alert("Template name is required.");
 		return false;
 	}
@@ -1763,9 +1989,17 @@ async function saveCurrentEditorContentAsTemplate() {
 
 	try {
 		await saveUserTemplates(templates);
+		logInfo("comment-template-saved-from-editor", {
+			templateId: nextTemplate.id,
+			templateLabel: nextTemplate.label,
+			...getHtmlLogDetails(content)
+		});
 		return true;
 	} catch (error) {
-		console.error("Could not save template", error);
+		logError("comment-template-save-current-failed", error, {
+			templateId: nextTemplate.id,
+			templateLabel: nextTemplate.label
+		});
 		alert("Could not save template.");
 		return false;
 	}
@@ -1840,9 +2074,9 @@ async function generateFillTimeSummary(input) {
 
 	if (typeof LanguageModel !== "undefined") {
 		const availability = await LanguageModel.availability(languageOptions);
-		console.log(`[generateFillTimeSummary] LanguageModel availability: ${availability}`);
+		logInfo("fill-time-summary-model-availability", { availability });
 		if (availability === "available") {
-			console.log("[generateFillTimeSummary] Using LanguageModel (Prompt API)");
+			logInfo("fill-time-summary-model-selected", { provider: "LanguageModel" });
 			const session = await LanguageModel.create({
 				...languageOptions,
 				initialPrompts: [{ role: "system", content: AI_PROMPTS.fillTimeSummarySystem }],
@@ -1852,7 +2086,10 @@ async function generateFillTimeSummary(input) {
 			try {
 				return await session.prompt(AI_PROMPTS.fillTimeSummaryUser(input));
 			} catch (err) {
-				console.warn("LanguageModel fill-time summary failed:", err);
+				logWarn("fill-time-summary-model-failed", {
+					provider: "LanguageModel",
+					error: summarizeError(err)
+				});
 			} finally {
 				session.destroy();
 			}
@@ -1860,7 +2097,7 @@ async function generateFillTimeSummary(input) {
 	}
 
 	// Summarizer fallback
-	console.log("[generateFillTimeSummary] LanguageModel unavailable, using Summarizer fallback");
+	logInfo("fill-time-summary-model-selected", { provider: "Summarizer", reason: "fallback" });
 	const summarizer = await Summarizer.create({
 		sharedContext: "Summarize work done into a single timesheet line.",
 		type: "tldr",
@@ -1971,9 +2208,9 @@ async function estimateDuration(input) {
 
 	if (typeof LanguageModel !== "undefined") {
 		const availability = await LanguageModel.availability(languageOptions);
-		console.log(`[estimateDuration] LanguageModel availability: ${availability}`);
+		logInfo("duration-estimate-model-availability", { availability });
 		if (availability === "available") {
-			console.log("[estimateDuration] Using LanguageModel (Prompt API)");
+			logInfo("duration-estimate-model-selected", { provider: "LanguageModel" });
 			const session = await LanguageModel.create({
 				...languageOptions,
 				initialPrompts: [{ role: "system", content: AI_PROMPTS.fillTimeDurationSystem }],
@@ -1986,7 +2223,10 @@ async function estimateDuration(input) {
 				if (isNaN(duration) || duration <= 0) duration = 1;
 				return roundDurationToQuarterHours(duration) ?? 1;
 			} catch (err) {
-				console.warn("LanguageModel duration estimate failed:", err);
+				logWarn("duration-estimate-model-failed", {
+					provider: "LanguageModel",
+					error: summarizeError(err)
+				});
 			} finally {
 				session.destroy();
 			}
@@ -2015,18 +2255,32 @@ async function resolveDurationFromCommentContent(commentHtml) {
 
 async function runFillTimeFromCommentEditor() {
 	const iframe = findElement("#txt_ed_comment_ifr");
-	if (!iframe) return;
+	if (!iframe) {
+		logWarn("fill-time-run-skipped", { reason: "iframe-missing" });
+		return;
+	}
 
 	const doc = iframe.contentDocument || iframe.contentWindow.document;
 	const tiny = doc?.querySelector("#tinymce");
-	if (!tiny) { alert("TinyMCE not found."); return; }
+	if (!tiny) {
+		logWarn("fill-time-run-skipped", { reason: "tinymce-body-missing" });
+		alert("TinyMCE not found.");
+		return;
+	}
 
 	const summaryField = findElement("#txt_tr_comments");
 	const durationField = findElement("#txt_tr_duration");
-	if (!summaryField) return;
+	if (!summaryField) {
+		logWarn("fill-time-run-skipped", { reason: "summary-field-missing" });
+		return;
+	}
 
 	const commentContent = tiny.innerHTML;
 	if (!normalizeRichText(commentContent)) {
+		logInfo("fill-time-run-skipped", {
+			reason: "empty-comment",
+			...getHtmlLogDetails(commentContent)
+		});
 		showTemporaryFieldMessage(
 			summaryField,
 			"This function uses local AI to infer your time based on comment content."
@@ -2035,6 +2289,10 @@ async function runFillTimeFromCommentEditor() {
 	}
 
 	const stopSpinner = startLoadingSpinner(summaryField, durationField);
+	logInfo("fill-time-run-started", {
+		ticketId: getCurrentTicketId(doc) || "",
+		...getHtmlLogDetails(commentContent)
+	});
 
 	try {
 		const [summary, duration] = await Promise.all([
@@ -2043,9 +2301,16 @@ async function runFillTimeFromCommentEditor() {
 		]);
 
 		stopSpinner(summary ?? "", duration);
+		logInfo("fill-time-run-finished", {
+			ticketId: getCurrentTicketId(doc) || "",
+			hasSummary: Boolean(summary),
+			duration: duration ?? null
+		});
 	} catch (err) {
 		stopSpinner("", null);
-		console.error("Fill time AI failed:", err);
+		logError("fill-time-run-failed", err, {
+			ticketId: getCurrentTicketId(doc) || ""
+		});
 	}
 }
 
@@ -2087,11 +2352,17 @@ function createTemplateDropdown() {
 		if (!selectedValue) return;
 
 		if (selectedValue === "__save_current_template__") {
+			logInfo("comment-template-dropdown-action", {
+				action: "save-current-as-new"
+			});
 			await saveCurrentEditorContentAsTemplate();
 			return;
 		}
 
 		if (selectedValue === "__manage_templates__") {
+			logInfo("comment-template-dropdown-action", {
+				action: "open-manager"
+			});
 			openTemplateManager();
 			return;
 		}
@@ -2099,6 +2370,11 @@ function createTemplateDropdown() {
 		const template = getTemplateById(selectedValue);
 		if (!template) return;
 
+		logInfo("comment-template-dropdown-action", {
+			action: "apply-template",
+			templateId: template.id,
+			templateLabel: template.label
+		});
 		applyTemplateToCommentEditor(template.content, template.id);
 	});
 
@@ -2378,13 +2654,13 @@ function insertSummaryBox(targetFieldset) {
 
 
 async function init() {
-	console.log("Initializing extension…");
+	logInfo("extension-initializing");
 	initUI();            // Your Extract & Summarise feature
 	try {
 		await initializeTemplates();
 		watchCommentEditor();
 	} catch (e) {
-		console.error("Could not initialize templates", e);
+		logError("template-initialization-failed", e);
 		watchCommentEditor();
 	}
 }
@@ -2399,7 +2675,7 @@ init();
 // });
 
 async function initUI() {
-	console.log("Waiting for .ui-dialog…");
+	logInfo("ui-init-waiting-for-dialog");
 
 	const dialog = await waitForElement(".ui-dialog");
 	const ensureExtractButton = () => {
@@ -2421,7 +2697,7 @@ async function initUI() {
 			buttonBar.appendChild(newButton);
 		}
 
-		console.log("Extract+Summarise button added.");
+		logInfo("ticket-summary-button-added");
 	};
 
 	await waitForElement(".ui-dialog-buttonset", dialog);
@@ -2445,25 +2721,25 @@ async function initUI() {
 }
 
 async function onExtractCommentsClick() {
-	console.log("AI Summary clicked");
+	logInfo("ticket-summary-clicked");
 
 	// Switch to the Comments tab so the summary box is visible
 	findElement('a.ui-tabs-anchor[href="#Comments"]')?.click();
 
 	if (findElement("#ai-summary-box")) {
-		console.info("AI summary already present, no need to add another one.");
+		logInfo("ticket-summary-skipped", { reason: "already-rendered" });
 		return;
 	}
 
 	const comments = getTicketData().comments;
 	if (!comments?.length) {
-		console.info("No cached comments available. Ticket data may not have loaded yet.");
+		logWarn("ticket-summary-skipped", { reason: "comments-not-cached" });
 		return;
 	}
 
 	const commentSection = findElement("#udp_Comments");
 	if (!commentSection) {
-		console.info("Could not find udp_Comments for UI insertion. onExtractCommentsClick");
+		logWarn("ticket-summary-skipped", { reason: "comment-section-missing" });
 		return;
 	}
 
@@ -2525,9 +2801,9 @@ async function generateSummary(input, summaryBox, keyPointsBox = null) {
 			expectedOutputs: [{ type: "text", languages: ["en"] }]
 		};
 		const availability = await LanguageModel.availability(languageOptions);
-		console.log(`[generateSummary] LanguageModel availability: ${availability}`);
+		logInfo("ticket-summary-model-availability", { availability });
 		if (availability === "available") {
-			console.log("[generateSummary] Using LanguageModel (Prompt API)");
+			logInfo("ticket-summary-model-selected", { provider: "LanguageModel" });
 			const session = await LanguageModel.create({
 				...languageOptions,
 				initialPrompts: [{ role: "system", content: AI_PROMPTS.summarySystem }],
@@ -2539,7 +2815,10 @@ async function generateSummary(input, summaryBox, keyPointsBox = null) {
 				await typewriterUpdate(stream, summaryBox);
 				return;
 			} catch (err) {
-				console.warn("LanguageModel summary failed, falling back to Summarizer:", err);
+				logWarn("ticket-summary-model-failed", {
+					provider: "LanguageModel",
+					error: summarizeError(err)
+				});
 			} finally {
 				session.destroy();
 			}
@@ -2547,7 +2826,7 @@ async function generateSummary(input, summaryBox, keyPointsBox = null) {
 	}
 
 	// Fallback: Summarizer — generate summary then key-points
-	console.log("[generateSummary] LanguageModel unavailable, using Summarizer fallback");
+	logInfo("ticket-summary-model-selected", { provider: "Summarizer", reason: "fallback" });
 	try {
 		const summarizer = await Summarizer.create({
 			sharedContext: "A general summary of support ticket comments, emphasizing latest status, blockers, and next actions.",
@@ -2564,7 +2843,7 @@ async function generateSummary(input, summaryBox, keyPointsBox = null) {
 			delete summaryBox.__loaderInterval;
 		}
 		summaryBox.textContent = "Failed to generate summary.";
-		console.error("generateSummary failed:", err);
+		logError("ticket-summary-generation-failed", err);
 		return;
 	}
 
@@ -2583,7 +2862,7 @@ async function generateSummary(input, summaryBox, keyPointsBox = null) {
 		keyPointsBox.innerHTML = formatMarkdown(keyPoints);
 	} catch (err) {
 		keyPointsBox.textContent = "Failed to generate key points.";
-		console.error("generateKeyPoints failed:", err);
+		logError("ticket-key-points-generation-failed", err);
 	}
 }
 
@@ -2592,16 +2871,16 @@ async function generateSummary(input, summaryBox, keyPointsBox = null) {
 // ------------------------------------------
 async function refreshTicketData(dialog) {
 
-	console.log("Ticket opened → refreshing ticketData");
+	logInfo("ticket-refresh-started");
 	const ticketDoc = await waitForTicketDocumentReady(dialog);
 	if (!ticketDoc) {
-		console.info("Could not resolve the ticket iframe document. refreshTicketData");
+		logWarn("ticket-refresh-skipped", { reason: "ticket-document-missing" });
 		return;
 	}
 
 	const commentSection = ticketDoc.querySelector("#udp_Comments");
 	if (!commentSection) {
-		console.info("Could not find udp_Comments. refreshTicketData");
+		logWarn("ticket-refresh-skipped", { reason: "comment-section-missing" });
 		return;
 	}
 	// 2. Extract comments
@@ -2635,7 +2914,11 @@ async function refreshTicketData(dialog) {
 	renderTicketNotifications(ticketDoc, warnings);
 
 	getSharedWindow().ticketData = nextTicketData;
-	console.log("ticketData updated:", getTicketData());
+	logInfo("ticket-refresh-finished", {
+		ticketId: getCurrentTicketId(ticketDoc) || "",
+		commentCount: nextTicketData.comments.length,
+		status: nextTicketData.status
+	});
 
 }
 
@@ -2643,6 +2926,26 @@ async function watchCommentEditor() {
 	const attachButtons = (root = document) => {
 		const editors = root.querySelectorAll("#divEditHDEntryComment_IO");
 		for (const editor of editors) {
+			if (!editor.dataset.trsCommentEditorDetected) {
+				editor.dataset.trsCommentEditorDetected = "true";
+				logInfo("comment-editor-detected", {
+					ticketId: getCurrentTicketId(editor.ownerDocument) || ""
+				});
+			}
+
+			const dialog = editor.closest(".ui-dialog");
+			const closeControls = dialog?.querySelectorAll(".ui-dialog-titlebar-close, .ui-dialog-buttonset button, .ui-dialog-buttonset a");
+			for (const control of closeControls || []) {
+				if (control.dataset.trsCommentCloseLogBound === "true") continue;
+				control.dataset.trsCommentCloseLogBound = "true";
+				control.addEventListener("click", () => {
+					logInfo("comment-editor-close-clicked", {
+						ticketId: getCurrentTicketId(editor.ownerDocument) || "",
+						controlSummary: summarizeControl(control)
+					});
+				});
+			}
+
 			addTemplateButtons(editor);
 			scheduleCommentDraftFeatureBinding();
 		}
@@ -2664,6 +2967,14 @@ async function watchCommentEditor() {
 
 				if (node.querySelector("#divEditHDEntryComment_IO")) {
 					attachButtons(node);
+				}
+			}
+
+			for (const node of mutation.removedNodes) {
+				if (!(node instanceof Element)) continue;
+
+				if (node.matches("#divEditHDEntryComment_IO") || node.querySelector("#divEditHDEntryComment_IO")) {
+					logInfo("comment-editor-removed");
 				}
 			}
 		}
