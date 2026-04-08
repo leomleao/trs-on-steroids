@@ -1,6 +1,6 @@
 {
   "name": "TRS on Steroids",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "manifest_version": 3,
   "default_locale": "en",
   "description": "TRS requires resources to implement new features, this gives it steroids.",

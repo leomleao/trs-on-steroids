@@ -1,3 +1,5 @@
+const LOG_PREFIX = "[TRS]";
+
 if (window.__trsOnSteroidsInitialized) {
 	logInfo("bootstrap-skipped", { reason: "already-initialized" });
 } else {
@@ -18,7 +20,6 @@ if (window.__trsOnSteroidsInitialized) {
 	const TEMPLATE_PLACEHOLDER_KEYS = Object.freeze(Object.keys(createEmptyTicketData()));
 	const TEMPLATE_EXPRESSION_KEYS = Object.freeze(["todayPlusDays(3)"]);
 	const TEMPLATE_MANAGER_OVERLAY_ID = "trs-template-manager-overlay";
-	const LOG_PREFIX = "[TRS]";
 
 	function summarizeError(error) {
 		if (!error) return null;
@@ -40,7 +41,7 @@ if (window.__trsOnSteroidsInitialized) {
 			return;
 		}
 
-		console.info(`${LOG_PREFIX} ${event}`, details);
+		console.info(`${LOG_PREFIX} ${event} ${JSON.stringify(details)}`, details);
 	}
 
 	function logWarn(event, details) {
@@ -49,14 +50,12 @@ if (window.__trsOnSteroidsInitialized) {
 			return;
 		}
 
-		console.warn(`${LOG_PREFIX} ${event}`, details);
+		console.warn(`${LOG_PREFIX} ${event} ${JSON.stringify(details)}`, details);
 	}
 
 	function logError(event, error, details = {}) {
-		console.error(`${LOG_PREFIX} ${event}`, {
-			...details,
-			error: summarizeError(error)
-		});
+		const combined = { ...details, error: summarizeError(error) };
+		console.error(`${LOG_PREFIX} ${event} ${JSON.stringify(combined)}`, combined);
 	}
 
 	function getHtmlLogDetails(html) {
