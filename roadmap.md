@@ -185,7 +185,7 @@ The extension currently uses only a content script with no background worker or 
 - [x] AI-powered Fill Time (summary + duration) implemented
 - [x] AI Extract & Summarise refactored with LanguageModel-first path
 - [x] Ticket switching refresh fully stabilized
-- [ ] Persistent state via `chrome.storage` (survive navigation, roam templates)
+- [x] Persistent state via `chrome.storage` (survive navigation, roam templates)
 - [ ] Side panel for warnings and AI output
 - [ ] Background alarms + desktop notifications for proactive alerts
 - [ ] Release ready (stable + storage + side panel)
